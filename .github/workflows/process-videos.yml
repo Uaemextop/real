@@ -8,17 +8,30 @@ permissions:
 
 jobs:
   process-videos:
-    runs-on: ubuntu-latest
+    runs-on: mp4  # GitHub Enterprise self-hosted runner (requires GPU for Real-ESRGAN)
     timeout-minutes: 360
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install ffmpeg
+      - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
+          sudo apt-get install -y -qq python3 python3-pip ffmpeg
+          pip install realesrgan ffmpeg-python
+          # Fix basicsr compatibility with newer torchvision
+          BASICSR_DEG=$(find "$(pip show basicsr | grep Location | cut -d' ' -f2)" -name "degradations.py" -path "*/basicsr/*" | head -1)
+          if [ -f "$BASICSR_DEG" ]; then
+            sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$BASICSR_DEG"
+          fi
+          # Clone Real-ESRGAN repo for the inference script
+          git clone --depth 1 https://github.com/xinntao/Real-ESRGAN.git /tmp/Real-ESRGAN
+          # Generate missing version.py so the local realesrgan package loads correctly
+          python3 -c "import importlib.metadata; v=importlib.metadata.version('realesrgan'); print(f\"__version__ = '{v}'\")" \
+            > /tmp/Real-ESRGAN/realesrgan/version.py
+          # Verify installation
+          python3 /tmp/Real-ESRGAN/inference_realesrgan.py --help
 
       - name: Create working directories
         run: |
@@ -42,8 +55,23 @@ jobs:
           done < video_urls.txt
           echo "Downloaded $(ls downloads/ | wc -l) videos"
 
-      - name: Process videos - remove black borders and improve quality
+      - name: Process videos - remove black borders and upscale with Real-ESRGAN
         run: |
+          # Auto-detect GPU for Real-ESRGAN
+          GPU_FLAG=""
+          FP32_FLAG="--fp32"
+          if command -v nvidia-smi &>/dev/null; then
+            GPU_ID=$(nvidia-smi --query-gpu=index --format=csv,noheader | head -1 | tr -d '[:space:]')
+            if [ -n "$GPU_ID" ]; then
+              echo "GPU detected: ID $GPU_ID — using half precision (fp16)"
+              GPU_FLAG="-g $GPU_ID"
+              FP32_FLAG=""
+            fi
+          fi
+          if [ -z "$GPU_FLAG" ]; then
+            echo "No GPU detected, Real-ESRGAN will run on CPU with --fp32"
+          fi
+
           for video in downloads/*; do
             [ -f "$video" ] || continue
             filename=$(basename "$video")
@@ -53,40 +81,83 @@ jobs:
             crop_info=$(ffmpeg -i "$video" -t 10 -vf cropdetect=24:16:0 -f null - 2>&1 \
               | grep -oP 'crop=\S+' | tail -1 || echo "")
 
+            # Step 1: Apply crop if black borders detected
+            cropped_video="downloads/cropped_${filename}"
             if [ -n "$crop_info" ]; then
               echo "  Detected crop: $crop_info"
-              # Apply crop to remove black borders and improve quality
-              ffmpeg -y -i "$video" \
-                -vf "${crop_info},unsharp=5:5:0.5:5:5:0.5" \
-                -c:v libx264 -preset medium -crf 20 \
-                -c:a aac -b:a 192k \
-                -movflags +faststart \
-                "processed/${filename}" 2>/dev/null || {
-                  echo "  WARNING: Processing with crop failed, trying without crop"
-                  ffmpeg -y -i "$video" \
-                    -vf "unsharp=5:5:0.5:5:5:0.5" \
-                    -c:v libx264 -preset medium -crf 20 \
-                    -c:a aac -b:a 192k \
-                    -movflags +faststart \
-                    "processed/${filename}" 2>/dev/null || {
-                      echo "  ERROR: Failed to process $filename, copying original"
-                      cp "$video" "processed/${filename}"
-                    }
+              ffmpeg -y -i "$video" -vf "${crop_info}" -c:v libx264 -preset ultrafast -crf 18 -c:a copy \
+                "$cropped_video" 2>/dev/null || {
+                  echo "  WARNING: Crop failed, using original"
+                  cropped_video="$video"
                 }
             else
-              echo "  No black borders detected, improving quality only"
+              echo "  No black borders detected"
+              cropped_video="$video"
+            fi
+
+            # Step 2: Extract frames for Real-ESRGAN upscaling
+            frames_dir="downloads/frames_${filename%.*}"
+            upscaled_dir="downloads/upscaled_${filename%.*}"
+            mkdir -p "$frames_dir" "$upscaled_dir"
+
+            ffmpeg -y -i "$cropped_video" -qscale:v 1 -qmin 1 -qmax 1 \
+              "${frames_dir}/frame_%06d.png" 2>/dev/null
+
+            # Get original FPS and audio
+            fps=$(ffprobe -v 0 -select_streams v -print_format flat \
+              -show_entries stream=r_frame_rate "$cropped_video" | grep -oP '\d+/\d+' | head -1)
+            [ -z "$fps" ] && fps="30/1"
+
+            ffmpeg -y -i "$cropped_video" -vn -acodec copy "downloads/audio_${filename%.*}.aac" 2>/dev/null || true
+
+            # Step 3: Upscale frames with Real-ESRGAN
+            # Arguments verified: -n model_name -i input -o output -s outscale --fp32 --suffix --ext --tile -g gpu_id
+            echo "  Upscaling frames with Real-ESRGAN (RealESRGAN_x4plus, outscale=2)..."
+            python3 /tmp/Real-ESRGAN/inference_realesrgan.py \
+              -n RealESRGAN_x4plus \
+              -i "$frames_dir" \
+              -o "$upscaled_dir" \
+              -s 2 \
+              --suffix "" \
+              --ext png \
+              $GPU_FLAG $FP32_FLAG || {
+              echo "  WARNING: Real-ESRGAN upscaling failed, using original frames"
+              cp "${frames_dir}"/*.png "$upscaled_dir/" 2>/dev/null || true
+            }
+
+            # Step 4: Reassemble video from upscaled frames + original audio
+            echo "  Reassembling video..."
+            if [ -f "downloads/audio_${filename%.*}.aac" ]; then
+              ffmpeg -y -framerate "$fps" -i "${upscaled_dir}/frame_%06d.png" \
+                -i "downloads/audio_${filename%.*}.aac" \
+                -c:v libx264 -preset medium -crf 18 \
+                -c:a aac -b:a 192k \
+                -pix_fmt yuv420p -movflags +faststart \
+                "processed/${filename}" 2>/dev/null
+            else
+              ffmpeg -y -framerate "$fps" -i "${upscaled_dir}/frame_%06d.png" \
+                -c:v libx264 -preset medium -crf 18 \
+                -pix_fmt yuv420p -movflags +faststart \
+                "processed/${filename}" 2>/dev/null
+            fi
+
+            # Fallback: if reassembly failed, just crop + encode without upscaling
+            if [ ! -f "processed/${filename}" ]; then
+              echo "  ERROR: Upscale pipeline failed for $filename, falling back to ffmpeg"
               ffmpeg -y -i "$video" \
-                -vf "unsharp=5:5:0.5:5:5:0.5" \
+                ${crop_info:+-vf "${crop_info}"} \
                 -c:v libx264 -preset medium -crf 20 \
                 -c:a aac -b:a 192k \
                 -movflags +faststart \
                 "processed/${filename}" 2>/dev/null || {
-                  echo "  ERROR: Failed to process $filename, copying original"
+                  echo "  ERROR: All processing failed, copying original"
                   cp "$video" "processed/${filename}"
                 }
             fi
 
-            # Remove downloaded file to save disk space
+            # Cleanup temp files to save disk space
+            rm -rf "$frames_dir" "$upscaled_dir" "downloads/audio_${filename%.*}.aac"
+            [ "$cropped_video" != "$video" ] && rm -f "$cropped_video"
             rm -f "$video"
           done
           echo "Processed $(ls processed/ | wc -l) videos"
@@ -143,10 +214,11 @@ jobs:
           TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
           TAG="videos-${TIMESTAMP}"
           TITLE="Processed Videos - ${TIMESTAMP}"
-          BODY="Processed videos with black borders removed and quality improved.
+          BODY="Processed videos with black borders removed and quality improved using Real-ESRGAN.
 
           - Black borders auto-detected and cropped using ffmpeg cropdetect
-          - Quality enhanced with x264 encoding (CRF 20) and unsharp filter
+          - Frames upscaled with Real-ESRGAN (RealESRGAN_x4plus model)
+          - Re-encoded with x264 (CRF 18) for high quality output
           - Videos split into zip parts (max ~1.9GB each)
 
           Total zip files: $(ls zips/*.zip 2>/dev/null | wc -l)"
