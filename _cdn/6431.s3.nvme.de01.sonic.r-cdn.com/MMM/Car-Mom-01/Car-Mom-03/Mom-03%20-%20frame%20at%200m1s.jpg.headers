@@ -1,0 +1,28 @@
+{
+  "url": "https://6431.s3.nvme.de01.sonic.r-cdn.com/MMM/Car-Mom-01/Car-Mom-03/Mom-03%20-%20frame%20at%200m1s.jpg",
+  "status_code": 200,
+  "headers": {
+    "Server": "nginx",
+    "Date": "Mon, 02 Mar 2026 08:07:39 GMT",
+    "Content-Type": "image/avif",
+    "Content-Length": "12409",
+    "Connection": "keep-alive",
+    "Cache-Control": "max-age=31536000",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    "Content-Security-Policy": "script-src 'self'",
+    "X-Frame-Options": "SAMEORIGIN",
+    "X-XSS-Protection": "1; mode=block",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin",
+    "Source-Content-Length": "71937",
+    "Source-Content-Type": "image/jpeg",
+    "Expires": "Tue, 02 Mar 2027 08:07:39 GMT",
+    "Last-Modified": "Fri, 16 Jan 2026 23:45:06 GMT",
+    "via": "pushr.io",
+    "Content-Disposition": "inline;filename=\"Mom-03%20-%20frame%20at%200m1s.jpg\"",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Expose-Headers": "Content-Length",
+    "CDN-Node": "edge-dal.03.pushrcdn.com",
+    "CACHE": "HIT"
+  }
+}

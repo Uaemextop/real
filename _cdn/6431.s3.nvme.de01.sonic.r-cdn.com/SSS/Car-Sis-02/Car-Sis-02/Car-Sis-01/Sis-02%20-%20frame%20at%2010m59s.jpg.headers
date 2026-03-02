@@ -1,0 +1,29 @@
+{
+  "url": "https://6431.s3.nvme.de01.sonic.r-cdn.com/SSS/Car-Sis-02/Car-Sis-02/Car-Sis-01/Sis-02%20-%20frame%20at%2010m59s.jpg",
+  "status_code": 200,
+  "headers": {
+    "Server": "nginx",
+    "Date": "Mon, 02 Mar 2026 08:07:52 GMT",
+    "Content-Type": "image/avif",
+    "Content-Length": "21262",
+    "Connection": "keep-alive",
+    "Cache-Control": "max-age=31536000",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    "Content-Security-Policy": "script-src 'self'",
+    "X-Frame-Options": "SAMEORIGIN",
+    "X-XSS-Protection": "1; mode=block",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin",
+    "Source-Content-Length": "149179",
+    "Source-Content-Type": "image/jpeg",
+    "Expires": "Tue, 02 Mar 2027 08:07:52 GMT",
+    "Last-Modified": "Sat, 24 Jan 2026 15:23:58 GMT",
+    "X-Optimizer-Node": "Muscular-Strawberry-Llama",
+    "via": "pushr.io",
+    "Content-Disposition": "inline;filename=\"Sis-02%20-%20frame%20at%2010m59s.jpg\"",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Expose-Headers": "Content-Length",
+    "CDN-Node": "edge-dal.03.pushrcdn.com",
+    "CACHE": "HIT"
+  }
+}
