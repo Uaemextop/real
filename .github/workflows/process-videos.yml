@@ -1,0 +1,123 @@
+name: Process Videos
+
+on:
+  workflow_dispatch:
+
+jobs:
+  process-videos:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg zip
+
+      - name: Download videos
+        run: |
+          mkdir -p downloads
+          while IFS='|' read -r url _rest || [ -n "$url" ]; do
+            url="$(echo "$url" | xargs)"
+            [ -z "$url" ] && continue
+            filename="$(basename "$url")"
+            echo "Downloading: $filename"
+            curl -fSL --retry 3 --retry-delay 5 -o "downloads/$filename" "$url" || echo "WARN: failed to download $url"
+          done < video_urls.txt
+          echo "Downloaded $(ls downloads | wc -l) files"
+
+      - name: Process videos with ffmpeg
+        run: |
+          mkdir -p processed
+          for file in downloads/*.mp4; do
+            [ ! -f "$file" ] && continue
+            filename="$(basename "$file")"
+            echo "=== Processing: $filename ==="
+
+            # Auto-detect crop values using cropdetect (sample 90 frames)
+            crop_value="$(ffmpeg -i "$file" -vf "cropdetect=24:16:0" -frames:v 90 -f null - 2>&1 \
+              | grep -oP 'crop=\S+' | tail -1 || true)"
+
+            if [ -z "$crop_value" ]; then
+              echo "No crop detected for $filename, applying quality improvement only"
+              crop_filter=""
+            else
+              echo "Detected crop: $crop_value"
+              crop_filter="${crop_value},"
+            fi
+
+            # Apply crop (if detected) and improve quality
+            ffmpeg -i "$file" \
+              -vf "${crop_filter}unsharp=5:5:0.5:5:5:0.5" \
+              -c:v libx264 -crf 18 -preset slow \
+              -c:a aac -b:a 192k \
+              -movflags +faststart \
+              -y "processed/$filename" \
+            && echo "OK: $filename" \
+            || echo "WARN: failed to process $filename"
+          done
+          echo "Processed $(ls processed | wc -l) files"
+
+      - name: Create split zip archives
+        run: |
+          mkdir -p zips
+          MAX_SIZE=$((1900 * 1024 * 1024))  # 1900 MB in bytes
+          zip_index=1
+          current_size=0
+          file_list=""
+
+          for file in processed/*.mp4; do
+            [ ! -f "$file" ] && continue
+            fsize="$(stat -c%s "$file")"
+
+            # If single file exceeds max, put it in its own zip
+            if [ "$fsize" -ge "$MAX_SIZE" ]; then
+              if [ -n "$file_list" ]; then
+                zip -j "zips/videos-part${zip_index}.zip" $file_list
+                zip_index=$((zip_index + 1))
+                file_list=""
+                current_size=0
+              fi
+              zip -j "zips/videos-part${zip_index}.zip" "$file"
+              zip_index=$((zip_index + 1))
+              continue
+            fi
+
+            # If adding this file would exceed limit, flush current batch
+            if [ -n "$file_list" ] && [ $((current_size + fsize)) -ge "$MAX_SIZE" ]; then
+              zip -j "zips/videos-part${zip_index}.zip" $file_list
+              zip_index=$((zip_index + 1))
+              file_list=""
+              current_size=0
+            fi
+
+            file_list="$file_list $file"
+            current_size=$((current_size + fsize))
+          done
+
+          # Flush remaining files
+          if [ -n "$file_list" ]; then
+            zip -j "zips/videos-part${zip_index}.zip" $file_list
+          fi
+
+          echo "Created $(ls zips/*.zip | wc -l) zip files:"
+          ls -lh zips/
+
+      - name: Create release and upload zips
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="videos-$(date +'%Y%m%d-%H%M%S')"
+          echo "Creating release with tag: $TAG"
+
+          gh release create "$TAG" \
+            --title "Processed Videos $TAG" \
+            --notes "Auto-processed videos with black border removal and quality enhancement." \
+            --latest \
+            zips/*.zip
+
+          echo "Release $TAG created and all zips uploaded."
