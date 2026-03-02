@@ -133,15 +133,48 @@ jobs:
             filename=$(basename "$video")
             echo "Processing: $filename"
 
-            # Detect crop values (black borders) by analyzing 10 seconds of the video
-            crop_info=$(ffmpeg -i "$video" -t 10 -vf cropdetect=24:16:0 -f null - 2>&1 \
-              | grep -oP 'crop=\S+' | tail -1 || echo "")
+            # Auto-calculate crop by detecting black borders
+            # 1. Get source video dimensions with ffprobe
+            src_w=$(ffprobe -v error -select_streams v:0 \
+              -show_entries stream=width -of csv=p=0 "$video" 2>/dev/null)
+            src_h=$(ffprobe -v error -select_streams v:0 \
+              -show_entries stream=height -of csv=p=0 "$video" 2>/dev/null)
+            echo "  Source dimensions: ${src_w}x${src_h}"
 
-            # Build ffmpeg filter and hwaccel flags per video
+            # 2. Run cropdetect and pick the most frequent crop (mode)
+            crop_info=$(ffmpeg -i "$video" -t 10 -vf cropdetect=24:16:0 -f null - 2>&1 \
+              | grep -oP 'crop=\S+' | sort | uniq -c | sort -rn | head -1 \
+              | awk '{print $2}' || echo "")
+
+            # 3. Validate crop against source dimensions
             VF_ARGS=""
             if [ -n "$crop_info" ]; then
               echo "  Detected crop: $crop_info"
-              VF_ARGS="-vf ${crop_info}"
+              crop_w=$(echo "$crop_info" | cut -d= -f2 | cut -d: -f1)
+              crop_h=$(echo "$crop_info" | cut -d= -f2 | cut -d: -f2)
+              crop_x=$(echo "$crop_info" | cut -d= -f2 | cut -d: -f3)
+              crop_y=$(echo "$crop_info" | cut -d= -f2 | cut -d: -f4)
+              # Ensure all four values are valid non-negative integers
+              if ! echo "$crop_w" | grep -qP '^[0-9]+$' || \
+                 ! echo "$crop_h" | grep -qP '^[0-9]+$' || \
+                 ! echo "$crop_x" | grep -qP '^[0-9]+$' || \
+                 ! echo "$crop_y" | grep -qP '^[0-9]+$'; then
+                echo "  WARNING: Non-numeric or negative crop values (w=${crop_w} h=${crop_h} x=${crop_x} y=${crop_y}), skipping crop"
+              # Width and height must be positive
+              elif [ "$crop_w" -eq 0 ] || [ "$crop_h" -eq 0 ]; then
+                echo "  WARNING: Zero crop dimensions (w=${crop_w}, h=${crop_h}), skipping crop"
+              # Crop region must fit within the source frame
+              elif [ -n "$src_w" ] && [ -n "$src_h" ] && \
+                   { [ "$((crop_x + crop_w))" -gt "$src_w" ] || [ "$((crop_y + crop_h))" -gt "$src_h" ]; }; then
+                echo "  WARNING: Crop ${crop_w}x${crop_h}+${crop_x}+${crop_y} exceeds source ${src_w}x${src_h}, skipping crop"
+              # Skip crop if it matches the full frame (nothing to crop)
+              elif [ "$crop_w" = "$src_w" ] && [ "$crop_h" = "$src_h" ] && \
+                   [ "$crop_x" = "0" ] && [ "$crop_y" = "0" ]; then
+                echo "  No black borders detected, skipping crop"
+              else
+                echo "  Applying crop: ${crop_w}x${crop_h}+${crop_x}+${crop_y}"
+                VF_ARGS="-vf ${crop_info}"
+              fi
             fi
 
             # Encode with chosen encoder
