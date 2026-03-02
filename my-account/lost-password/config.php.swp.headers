@@ -1,0 +1,29 @@
+{
+  "url": "https://realsuperlandiaxxx.online/my-account/lost-password/config.php.swp",
+  "status_code": 200,
+  "headers": {
+    "Date": "Mon, 02 Mar 2026 08:25:18 GMT",
+    "Content-Type": "text/html; charset=UTF-8",
+    "Transfer-Encoding": "chunked",
+    "Connection": "keep-alive",
+    "expires": "Wed, 11 Jan 1984 05:00:00 GMT",
+    "Cache-Control": "no-cache, must-revalidate, max-age=0, private",
+    "x-frame-options": "SAMEORIGIN",
+    "content-security-policy": "frame-ancestors 'self';",
+    "x-robots-tag": "noindex",
+    "link": "<https://realsuperlandiaxxx.online/wp-json/>; rel=\"https://api.w.org/\", <https://realsuperlandiaxxx.online/wp-json/wp/v2/pages/36>; rel=\"alternate\"; title=\"JSON\"; type=\"application/json\", <https://realsuperlandiaxxx.online/?p=36>; rel=shortlink",
+    "wpo-cache-status": "not cached",
+    "wpo-cache-message": "DONOTCACHEPAGE constant forbade it and wpo_can_cache_page filter did not over-ride it",
+    "Report-To": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=2Mdv9MYT3Z7rXu8TpxKBjqnya3HfbHRfBMOjPMn4B2z1z%2F0TH88jTPTW%2BvydTRBJDWTGU7%2B3YdinDRDK99o1uhqklhcf8IdADeS7%2BjGXGtsq24M6RRcUvGc%3D\"}]}",
+    "vary": "Accept-Encoding",
+    "Server": "cloudflare",
+    "x-powered-by": "CyberPanel-OLS/2.4.4",
+    "x-turbo-charged-by": "LiteSpeed",
+    "cf-cache-status": "DYNAMIC",
+    "Nel": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}",
+    "Server-Timing": "cfCacheStatus;desc=\"DYNAMIC\", cfEdge;dur=3,cfOrigin;dur=3511",
+    "Content-Encoding": "gzip",
+    "CF-RAY": "9d5f027f5a51474f-DFW",
+    "alt-svc": "h3=\":443\"; ma=86400"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "url": "https://realsuperlandiaxxx.online/wp-content/plugins/all-in-one-wp-migration/uninstall.php",
+  "status_code": 200,
+  "headers": {
+    "Date": "Mon, 02 Mar 2026 08:50:39 GMT",
+    "Content-Type": "text/html; charset=UTF-8",
+    "Transfer-Encoding": "chunked",
+    "Connection": "keep-alive",
+    "Report-To": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=6fxYV73iXIUfaVVK3f0YGJ06IpNzjfvXs%2BqgznRi1LyPCM75If8P%2BuFJbJanfDEQ4mfflqgRI3qUpOl3oie65gadW4KB4NvSqBUHPkjNkgfk3wG1KPzm\"}]}",
+    "vary": "Accept-Encoding",
+    "Server": "cloudflare",
+    "x-powered-by": "CyberPanel-OLS/2.4.4",
+    "x-turbo-charged-by": "LiteSpeed",
+    "cf-cache-status": "DYNAMIC",
+    "Nel": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}",
+    "Server-Timing": "cfCacheStatus;desc=\"DYNAMIC\", cfEdge;dur=2,cfOrigin;dur=1007",
+    "Content-Encoding": "gzip",
+    "CF-RAY": "9d5f27b16b0cc133-DFW",
+    "alt-svc": "h3=\":443\"; ma=86400"
+  }
+}
