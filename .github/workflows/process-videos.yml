@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   process-videos:
-    runs-on: mp4  # GitHub Enterprise self-hosted runner (requires GPU for Real-ESRGAN)
+    runs-on: mp4  # GitHub Enterprise self-hosted runner with GPU
     timeout-minutes: 360
 
     steps:
@@ -47,39 +47,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Ensure CUDA paths are available
-          export PATH="/usr/local/cuda/bin:$PATH"
-          export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
-
           sudo apt-get update -qq
-          sudo apt-get install -y -qq python3 python3-pip ffmpeg aria2
-
-          # Install PyTorch with CUDA support for GPU acceleration
-          pip install --break-system-packages torch torchvision --index-url https://download.pytorch.org/whl/cu121 || \
-            pip install --break-system-packages torch torchvision
-          pip install --break-system-packages realesrgan ffmpeg-python
-
-          # Fix basicsr compatibility with newer torchvision
-          BASICSR_DEG=$(find "$(pip show basicsr | grep Location | cut -d' ' -f2)" -name "degradations.py" -path "*/basicsr/*" | head -1)
-          if [ -f "$BASICSR_DEG" ]; then
-            sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$BASICSR_DEG"
-          fi
-          # Clone Real-ESRGAN repo for the inference script
-          git clone --depth 1 https://github.com/xinntao/Real-ESRGAN.git /tmp/Real-ESRGAN
-          # Generate missing version.py so the local realesrgan package loads correctly
-          python3 -c "import importlib.metadata; v=importlib.metadata.version('realesrgan'); print(f\"__version__ = '{v}'\")" \
-            > /tmp/Real-ESRGAN/realesrgan/version.py
-          # Verify installation
-          python3 /tmp/Real-ESRGAN/inference_realesrgan.py --help
-          # Report PyTorch CUDA status
-          python3 -c "
-          import torch
-          print(f'PyTorch CUDA available: {torch.cuda.is_available()}')
-          if torch.cuda.is_available():
-              print(f'CUDA devices: {torch.cuda.device_count()}')
-              for i in range(torch.cuda.device_count()):
-                  print(f'  GPU {i}: {torch.cuda.get_device_name(i)}')
-          "
+          sudo apt-get install -y -qq ffmpeg aria2
 
       - name: Create working directories
         run: |
@@ -131,46 +100,32 @@ jobs:
 
           echo "Downloaded $(ls downloads/ | wc -l) videos"
 
-      - name: Process videos - remove black borders and upscale with Real-ESRGAN
+      - name: Process videos - remove black borders and re-encode with GPU
         run: |
           # Ensure CUDA paths are available
           export PATH="/usr/local/cuda/bin:$PATH"
           export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
 
-          # Auto-detect GPU for Real-ESRGAN
-          GPU_FLAG=""
-          FP32_FLAG="--fp32"
-
-          # Method 1: Try nvidia-smi
+          # Detect GPU and choose encoder
+          ENCODER="libx264"
+          HWACCEL_FLAGS=""
           if command -v nvidia-smi &>/dev/null; then
-            GPU_ID=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]')
-            if [ -n "$GPU_ID" ] && echo "$GPU_ID" | grep -qE '^[0-9]+$'; then
-              echo "GPU detected via nvidia-smi: ID $GPU_ID"
-              nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
-              GPU_FLAG="-g $GPU_ID"
-              FP32_FLAG=""
-            else
-              echo "nvidia-smi found but returned no valid GPU index (got: '$GPU_ID')"
-              nvidia-smi 2>&1 || true
+            GPU_NAME=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1)
+            if [ -n "$GPU_NAME" ]; then
+              echo "GPU detected: $GPU_NAME"
+              # Test if h264_nvenc is available in ffmpeg
+              if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q h264_nvenc; then
+                ENCODER="h264_nvenc"
+                HWACCEL_FLAGS="-hwaccel cuda -hwaccel_output_format cuda"
+                echo "Using GPU-accelerated encoder: h264_nvenc"
+              else
+                echo "h264_nvenc not available, falling back to libx264"
+              fi
             fi
           fi
 
-          # Method 2: Fallback — detect via PyTorch CUDA
-          if [ -z "$GPU_FLAG" ]; then
-            CUDA_AVAIL=$(python3 -c "import torch; print(torch.cuda.is_available())" 2>/dev/null || echo "False")
-            if [ "$CUDA_AVAIL" = "True" ]; then
-              GPU_ID=$(python3 -c "import torch; print(torch.cuda.current_device())" 2>/dev/null || echo "0")
-              GPU_NAME=$(python3 -c "import torch; print(torch.cuda.get_device_name(0))" 2>/dev/null || echo "unknown")
-              echo "GPU detected via PyTorch CUDA: ID $GPU_ID ($GPU_NAME)"
-              GPU_FLAG="-g $GPU_ID"
-              FP32_FLAG=""
-            fi
-          fi
-
-          if [ -n "$GPU_FLAG" ]; then
-            echo "Using GPU acceleration (fp16 half precision)"
-          else
-            echo "No GPU detected, Real-ESRGAN will run on CPU with --fp32"
+          if [ "$ENCODER" = "libx264" ]; then
+            echo "Using CPU encoder: libx264"
           fi
 
           for video in downloads/*; do
@@ -182,84 +137,49 @@ jobs:
             crop_info=$(ffmpeg -i "$video" -t 10 -vf cropdetect=24:16:0 -f null - 2>&1 \
               | grep -oP 'crop=\S+' | tail -1 || echo "")
 
-            # Step 1: Apply crop if black borders detected
-            cropped_video="downloads/cropped_${filename}"
+            # Build ffmpeg filter and hwaccel flags per video
+            VF_ARGS=""
+            ACCEL_FLAGS="$HWACCEL_FLAGS"
             if [ -n "$crop_info" ]; then
               echo "  Detected crop: $crop_info"
-              ffmpeg -y -i "$video" -vf "${crop_info}" -c:v libx264 -preset ultrafast -crf 18 -c:a copy \
-                "$cropped_video" 2>/dev/null || {
-                  echo "  WARNING: Crop failed, using original"
-                  cropped_video="$video"
-                }
-            else
-              echo "  No black borders detected"
-              cropped_video="$video"
+              VF_ARGS="-vf ${crop_info}"
+              ACCEL_FLAGS=""  # crop filter requires CPU frames, disable hwaccel
             fi
 
-            # Step 2: Extract frames for Real-ESRGAN upscaling
-            frames_dir="downloads/frames_${filename%.*}"
-            upscaled_dir="downloads/upscaled_${filename%.*}"
-            mkdir -p "$frames_dir" "$upscaled_dir"
-
-            ffmpeg -y -i "$cropped_video" -qscale:v 1 -qmin 1 -qmax 1 \
-              "${frames_dir}/frame_%06d.png" 2>/dev/null
-
-            # Get original FPS and audio
-            fps=$(ffprobe -v 0 -select_streams v -print_format flat \
-              -show_entries stream=r_frame_rate "$cropped_video" | grep -oP '\d+/\d+' | head -1)
-            [ -z "$fps" ] && fps="30/1"
-
-            ffmpeg -y -i "$cropped_video" -vn -acodec copy "downloads/audio_${filename%.*}.aac" 2>/dev/null || true
-
-            # Step 3: Upscale frames with Real-ESRGAN
-            # Arguments verified: -n model_name -i input -o output -s outscale --fp32 --suffix --ext --tile -g gpu_id
-            echo "  Upscaling frames with Real-ESRGAN (RealESRGAN_x4plus, outscale=2)..."
-            python3 /tmp/Real-ESRGAN/inference_realesrgan.py \
-              -n RealESRGAN_x4plus \
-              -i "$frames_dir" \
-              -o "$upscaled_dir" \
-              -s 2 \
-              --suffix "" \
-              --ext png \
-              $GPU_FLAG $FP32_FLAG || {
-              echo "  WARNING: Real-ESRGAN upscaling failed, using original frames"
-              cp "${frames_dir}"/*.png "$upscaled_dir/" 2>/dev/null || true
-            }
-
-            # Step 4: Reassemble video from upscaled frames + original audio
-            echo "  Reassembling video..."
-            if [ -f "downloads/audio_${filename%.*}.aac" ]; then
-              ffmpeg -y -framerate "$fps" -i "${upscaled_dir}/frame_%06d.png" \
-                -i "downloads/audio_${filename%.*}.aac" \
-                -c:v libx264 -preset medium -crf 18 \
+            # Encode with chosen encoder
+            if [ "$ENCODER" = "h264_nvenc" ]; then
+              ffmpeg -y $ACCEL_FLAGS -i "$video" \
+                $VF_ARGS \
+                -c:v h264_nvenc -preset p4 -cq 18 -b:v 0 \
                 -c:a aac -b:a 192k \
                 -pix_fmt yuv420p -movflags +faststart \
-                "processed/${filename}" 2>/dev/null
-            else
-              ffmpeg -y -framerate "$fps" -i "${upscaled_dir}/frame_%06d.png" \
-                -c:v libx264 -preset medium -crf 18 \
-                -pix_fmt yuv420p -movflags +faststart \
-                "processed/${filename}" 2>/dev/null
-            fi
-
-            # Fallback: if reassembly failed, just crop + encode without upscaling
-            if [ ! -f "processed/${filename}" ]; then
-              echo "  ERROR: Upscale pipeline failed for $filename, falling back to ffmpeg"
-              ffmpeg -y -i "$video" \
-                ${crop_info:+-vf "${crop_info}"} \
-                -c:v libx264 -preset medium -crf 20 \
-                -c:a aac -b:a 192k \
-                -movflags +faststart \
                 "processed/${filename}" 2>/dev/null || {
-                  echo "  ERROR: All processing failed, copying original"
-                  cp "$video" "processed/${filename}"
+                  echo "  WARNING: NVENC failed, retrying with libx264"
+                  ffmpeg -y -i "$video" \
+                    $VF_ARGS \
+                    -c:v libx264 -preset fast -crf 18 \
+                    -c:a aac -b:a 192k \
+                    -pix_fmt yuv420p -movflags +faststart \
+                    "processed/${filename}" 2>/dev/null
                 }
+            else
+              ffmpeg -y -i "$video" \
+                $VF_ARGS \
+                -c:v libx264 -preset fast -crf 18 \
+                -c:a aac -b:a 192k \
+                -pix_fmt yuv420p -movflags +faststart \
+                "processed/${filename}" 2>/dev/null
             fi
 
-            # Cleanup temp files to save disk space
-            rm -rf "$frames_dir" "$upscaled_dir" "downloads/audio_${filename%.*}.aac"
-            [ "$cropped_video" != "$video" ] && rm -f "$cropped_video"
+            # Fallback: if encoding failed, copy original
+            if [ ! -f "processed/${filename}" ]; then
+              echo "  ERROR: All processing failed for $filename, copying original"
+              cp "$video" "processed/${filename}"
+            fi
+
+            # Remove original to save disk space
             rm -f "$video"
+            echo "  Done. Disk: $(df -h . | tail -1 | awk '{print $4}') free"
           done
           echo "Processed $(ls processed/ | wc -l) videos"
 
@@ -315,11 +235,10 @@ jobs:
           TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
           TAG="videos-${TIMESTAMP}"
           TITLE="Processed Videos - ${TIMESTAMP}"
-          BODY="Processed videos with black borders removed and quality improved using Real-ESRGAN.
+          BODY="Processed videos with black borders removed and re-encoded using GPU-accelerated ffmpeg.
 
           - Black borders auto-detected and cropped using ffmpeg cropdetect
-          - Frames upscaled with Real-ESRGAN (RealESRGAN_x4plus model)
-          - Re-encoded with x264 (CRF 18) for high quality output
+          - Re-encoded with h264_nvenc (GPU) or libx264 (CPU fallback)
           - Videos split into zip parts (max ~1.9GB each)
 
           Total zip files: $(ls zips/*.zip 2>/dev/null | wc -l)"
