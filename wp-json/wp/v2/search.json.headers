@@ -1,0 +1,32 @@
+{
+  "url": "https://realsuperlandiaxxx.online/wp-json/wp/v2/search",
+  "status_code": 200,
+  "headers": {
+    "Date": "Mon, 02 Mar 2026 08:08:44 GMT",
+    "Content-Type": "application/json; charset=UTF-8",
+    "Content-Length": "327",
+    "Connection": "keep-alive",
+    "Cache-Control": "no-cache",
+    "x-robots-tag": "noindex",
+    "x-content-type-options": "nosniff",
+    "access-control-expose-headers": "X-WP-Total, X-WP-TotalPages, Link",
+    "access-control-allow-headers": "Authorization, X-WP-Nonce, Content-Disposition, Content-MD5, Content-Type",
+    "x-wp-total": "409",
+    "x-wp-totalpages": "41",
+    "link": "<https://realsuperlandiaxxx.online/wp-json/wp/v2/search?page=2>; rel=\"next\"",
+    "allow": "GET",
+    "vary": "Origin,Accept-Encoding",
+    "wpo-cache-status": "not cached",
+    "wpo-cache-message": "This is a REST API request (identified by REST_REQUEST constant) and you have not enabled REST API caching",
+    "Content-Encoding": "gzip",
+    "Server": "cloudflare",
+    "x-powered-by": "CyberPanel-OLS/2.4.4",
+    "x-turbo-charged-by": "LiteSpeed",
+    "cf-cache-status": "DYNAMIC",
+    "Nel": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}",
+    "Server-Timing": "cfCacheStatus;desc=\"DYNAMIC\", cfEdge;dur=3,cfOrigin;dur=1217",
+    "Report-To": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=louZd90MJuG2NV%2FFa0aeecX4%2B2hxeA68%2F5RlzooVj%2B1p%2BBrK%2FR%2BAdIaG0BU3%2BnBu4SKZMQK2U4O2sc%2FPLzeoBaliJseSfnmOVLJZVMmRpU50jVhHBmZ90pU%3D\"}]}",
+    "CF-RAY": "9d5eea4619fc6c50-DFW",
+    "alt-svc": "h3=\":443\"; ma=86400"
+  }
+}

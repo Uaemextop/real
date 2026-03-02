@@ -1,0 +1,25 @@
+{
+  "url": "https://realsuperlandiaxxx.online/wp-content/themes/retrotube/assets/stylesheets/font-awesome/fonts/fontawesome-webfont.ttf?v=4.7.0",
+  "status_code": 200,
+  "headers": {
+    "Date": "Mon, 02 Mar 2026 08:08:30 GMT",
+    "Content-Type": "application/x-font-ttf",
+    "Transfer-Encoding": "chunked",
+    "Connection": "keep-alive",
+    "Cache-Control": "public, max-age=604800",
+    "expires": "Mon, 09 Mar 2026 06:50:20 GMT",
+    "Nel": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}",
+    "last-modified": "Fri, 06 Feb 2026 14:47:38 GMT",
+    "Server-Timing": "cfCacheStatus;desc=\"HIT\", cfEdge;dur=7,cfOrigin;dur=0",
+    "Report-To": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=bpnxNVwuBsNT2B4g2czo%2BXg4aUNVYm6qWqSUxzJBw50gNSr7dTPhO4XWmhMcPNt1Bx1AZJTfMvFPrK3553vKNbDQGmukui2%2BKXYP6IP9QRRBbpbLPFBPOY4%3D\"}]}",
+    "vary": "Accept-Encoding",
+    "Server": "cloudflare",
+    "x-powered-by": "CyberPanel-OLS/2.4.4",
+    "x-turbo-charged-by": "LiteSpeed",
+    "Age": "4690",
+    "cf-cache-status": "HIT",
+    "etag": "W/\"286ac-6985ff0a-e22a5;br\"",
+    "CF-RAY": "9d5ee9f88e72474f-DFW",
+    "alt-svc": "h3=\":443\"; ma=86400"
+  }
+}

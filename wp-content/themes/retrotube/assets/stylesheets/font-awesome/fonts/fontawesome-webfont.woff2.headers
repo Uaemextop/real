@@ -1,0 +1,25 @@
+{
+  "url": "https://realsuperlandiaxxx.online/wp-content/themes/retrotube/assets/stylesheets/font-awesome/fonts/fontawesome-webfont.woff2?v=4.7.0",
+  "status_code": 200,
+  "headers": {
+    "Date": "Mon, 02 Mar 2026 08:08:30 GMT",
+    "Content-Type": "font/woff2",
+    "Content-Length": "77160",
+    "Connection": "keep-alive",
+    "Cache-Control": "public, max-age=604800",
+    "expires": "Mon, 09 Mar 2026 01:43:59 GMT",
+    "etag": "\"12d68-6985ff0a-e22a4;;;\"",
+    "last-modified": "Fri, 06 Feb 2026 14:47:38 GMT",
+    "Accept-Ranges": "bytes",
+    "Server": "cloudflare",
+    "x-powered-by": "CyberPanel-OLS/2.4.4",
+    "x-turbo-charged-by": "LiteSpeed",
+    "Age": "23071",
+    "cf-cache-status": "HIT",
+    "Nel": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}",
+    "Server-Timing": "cfCacheStatus;desc=\"HIT\", cfEdge;dur=4,cfOrigin;dur=0",
+    "Report-To": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=%2FnKcnMjHjHgrukdFyNX%2B8bNej9Ddkg%2BuL%2FWjuPkJb0K5itbTfIUi5w1a6q7YXzAn73AK6x27bKMr7grNZVBmAoSAdSWkLwMMKAPQ0yDlx2ePemA8GtxxmIw%3D\"}]}",
+    "CF-RAY": "9d5ee9f88833cd59-DFW",
+    "alt-svc": "h3=\":443\"; ma=86400"
+  }
+}

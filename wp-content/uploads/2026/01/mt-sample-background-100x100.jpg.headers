@@ -1,0 +1,25 @@
+{
+  "url": "https://realsuperlandiaxxx.online/wp-content/uploads/2026/01/mt-sample-background-100x100.jpg",
+  "status_code": 200,
+  "headers": {
+    "Date": "Mon, 02 Mar 2026 08:08:27 GMT",
+    "Content-Type": "image/jpeg",
+    "Content-Length": "1490",
+    "Connection": "keep-alive",
+    "Cache-Control": "public, max-age=604800",
+    "expires": "Mon, 09 Mar 2026 06:55:36 GMT",
+    "etag": "\"5d2-6965339b-c2e78;;;\"",
+    "last-modified": "Mon, 12 Jan 2026 17:47:07 GMT",
+    "Accept-Ranges": "bytes",
+    "Server": "cloudflare",
+    "x-powered-by": "CyberPanel-OLS/2.4.4",
+    "x-turbo-charged-by": "LiteSpeed",
+    "Age": "4370",
+    "cf-cache-status": "HIT",
+    "Nel": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}",
+    "Server-Timing": "cfCacheStatus;desc=\"HIT\", cfEdge;dur=5,cfOrigin;dur=0",
+    "Report-To": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=BeMm%2BXlxyBisimGc0%2FvMPkogfs5mvzlBQMul8ht%2BfIhhmp9ATB3sXnC%2B7SnXRBBhbJKgdD3%2BXFBP2gkWHmL8d9Z2w5AtwVUv68z4ssnn4pMiu8UMlMvx10Q%3D\"}]}",
+    "CF-RAY": "9d5ee9e41f9e474f-DFW",
+    "alt-svc": "h3=\":443\"; ma=86400"
+  }
+}
