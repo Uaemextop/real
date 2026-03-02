@@ -15,11 +15,50 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install NVIDIA drivers and CUDA toolkit
+        run: |
+          echo "=== Checking for existing NVIDIA GPU hardware ==="
+          lspci | grep -i nvidia || echo "No NVIDIA PCI devices listed (may need driver)"
+
+          # Install NVIDIA driver and CUDA toolkit if not already present
+          if ! command -v nvidia-smi &>/dev/null; then
+            echo "nvidia-smi not found — installing NVIDIA drivers and CUDA toolkit..."
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ubuntu-drivers-common nvidia-cuda-toolkit
+            # Auto-detect and install the recommended driver for the GPU
+            RECOMMENDED=$(ubuntu-drivers devices 2>/dev/null | grep -oP 'nvidia-driver-\d+' | sort -t- -k3 -n | tail -1)
+            if [ -n "$RECOMMENDED" ]; then
+              echo "Installing recommended driver: $RECOMMENDED"
+              sudo apt-get install -y -qq "$RECOMMENDED"
+            else
+              echo "No recommended driver found, installing nvidia-driver-535 as default"
+              sudo apt-get install -y -qq nvidia-driver-535
+            fi
+            # Reload the NVIDIA kernel module
+            sudo modprobe nvidia || true
+          fi
+
+          # Ensure CUDA paths are available
+          export PATH="/usr/local/cuda/bin:$PATH"
+          export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
+
+          echo "=== GPU status ==="
+          nvidia-smi || echo "WARNING: nvidia-smi failed — GPU may not be available"
+
       - name: Install dependencies
         run: |
+          # Ensure CUDA paths are available
+          export PATH="/usr/local/cuda/bin:$PATH"
+          export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
+
           sudo apt-get update -qq
           sudo apt-get install -y -qq python3 python3-pip ffmpeg aria2
+
+          # Install PyTorch with CUDA support for GPU acceleration
+          pip install --break-system-packages torch torchvision --index-url https://download.pytorch.org/whl/cu121 || \
+            pip install --break-system-packages torch torchvision
           pip install --break-system-packages realesrgan ffmpeg-python
+
           # Fix basicsr compatibility with newer torchvision
           BASICSR_DEG=$(find "$(pip show basicsr | grep Location | cut -d' ' -f2)" -name "degradations.py" -path "*/basicsr/*" | head -1)
           if [ -f "$BASICSR_DEG" ]; then
@@ -32,6 +71,15 @@ jobs:
             > /tmp/Real-ESRGAN/realesrgan/version.py
           # Verify installation
           python3 /tmp/Real-ESRGAN/inference_realesrgan.py --help
+          # Report PyTorch CUDA status
+          python3 -c "
+          import torch
+          print(f'PyTorch CUDA available: {torch.cuda.is_available()}')
+          if torch.cuda.is_available():
+              print(f'CUDA devices: {torch.cuda.device_count()}')
+              for i in range(torch.cuda.device_count()):
+                  print(f'  GPU {i}: {torch.cuda.get_device_name(i)}')
+          "
 
       - name: Create working directories
         run: |
@@ -39,8 +87,11 @@ jobs:
 
       - name: Download videos
         run: |
-          count=0
           total=$(wc -l < video_urls.txt)
+          echo "Preparing $total downloads..."
+
+          # Build an aria2c input file for batch concurrent downloading
+          count=0
           while IFS='|' read -r url rest || [ -n "$url" ]; do
             count=$((count + 1))
             # Strip leading number prefix (e.g. "1. https://..." -> "https://...")
@@ -50,45 +101,75 @@ jobs:
             filename=$(basename "$url")
             # Make filename unique by prepending a counter
             unique_name="${count}_${filename}"
-            # Get file size via HEAD request
-            file_size=$(curl -sIL "$url" | grep -i content-length | tail -1 | tr -d '\r' | awk '{print $2}')
-            if [ -n "$file_size" ] && [ "$file_size" -gt 0 ] 2>/dev/null; then
-              if [ "$file_size" -ge 1073741824 ]; then
-                size_hr=$(awk "BEGIN {printf \"%.2f GB\", $file_size/1073741824}")
-              elif [ "$file_size" -ge 1048576 ]; then
-                size_hr=$(awk "BEGIN {printf \"%.2f MB\", $file_size/1048576}")
-              elif [ "$file_size" -ge 1024 ]; then
-                size_hr=$(awk "BEGIN {printf \"%.2f KB\", $file_size/1024}")
-              else
-                size_hr="${file_size} B"
-              fi
-              echo "[$count/$total] Downloading: $filename ($size_hr)"
-            else
-              echo "[$count/$total] Downloading: $filename"
-            fi
-            aria2c -x 16 -s 16 -k 1M --file-allocation=none --max-tries=3 --retry-wait=5 \
-              --console-log-level=warn --summary-interval=0 \
-              -d downloads -o "${unique_name}" "$url" || {
-              echo "WARNING: Failed to download $url"
-              continue
-            }
-          done < video_urls.txt
+            # aria2c input file format: URL\n  out=filename\n
+            echo "$url"
+            echo "  out=${unique_name}"
+          done < video_urls.txt > /tmp/aria2_downloads.txt
+
+          echo "Starting batch download of $total files with aria2c (multi-threaded)..."
+          aria2c \
+            --input-file=/tmp/aria2_downloads.txt \
+            --dir=downloads \
+            --max-concurrent-downloads=32 \
+            --max-connection-per-server=16 \
+            --split=16 \
+            --min-split-size=1M \
+            --file-allocation=none \
+            --max-tries=5 \
+            --retry-wait=3 \
+            --connect-timeout=10 \
+            --timeout=120 \
+            --max-overall-download-limit=0 \
+            --max-download-limit=0 \
+            --optimize-concurrent-downloads=true \
+            --stream-piece-selector=geom \
+            --uri-selector=adaptive \
+            --console-log-level=warn \
+            --summary-interval=15 \
+            --auto-file-renaming=false \
+            --allow-overwrite=true || echo "WARNING: Some downloads may have failed"
+
           echo "Downloaded $(ls downloads/ | wc -l) videos"
 
       - name: Process videos - remove black borders and upscale with Real-ESRGAN
         run: |
+          # Ensure CUDA paths are available
+          export PATH="/usr/local/cuda/bin:$PATH"
+          export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
+
           # Auto-detect GPU for Real-ESRGAN
           GPU_FLAG=""
           FP32_FLAG="--fp32"
+
+          # Method 1: Try nvidia-smi
           if command -v nvidia-smi &>/dev/null; then
-            GPU_ID=$(nvidia-smi --query-gpu=index --format=csv,noheader | head -1 | tr -d '[:space:]')
-            if [ -n "$GPU_ID" ]; then
-              echo "GPU detected: ID $GPU_ID — using half precision (fp16)"
+            GPU_ID=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]')
+            if [ -n "$GPU_ID" ] && echo "$GPU_ID" | grep -qE '^[0-9]+$'; then
+              echo "GPU detected via nvidia-smi: ID $GPU_ID"
+              nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
+              GPU_FLAG="-g $GPU_ID"
+              FP32_FLAG=""
+            else
+              echo "nvidia-smi found but returned no valid GPU index (got: '$GPU_ID')"
+              nvidia-smi 2>&1 || true
+            fi
+          fi
+
+          # Method 2: Fallback — detect via PyTorch CUDA
+          if [ -z "$GPU_FLAG" ]; then
+            CUDA_AVAIL=$(python3 -c "import torch; print(torch.cuda.is_available())" 2>/dev/null || echo "False")
+            if [ "$CUDA_AVAIL" = "True" ]; then
+              GPU_ID=$(python3 -c "import torch; print(torch.cuda.current_device())" 2>/dev/null || echo "0")
+              GPU_NAME=$(python3 -c "import torch; print(torch.cuda.get_device_name(0))" 2>/dev/null || echo "unknown")
+              echo "GPU detected via PyTorch CUDA: ID $GPU_ID ($GPU_NAME)"
               GPU_FLAG="-g $GPU_ID"
               FP32_FLAG=""
             fi
           fi
-          if [ -z "$GPU_FLAG" ]; then
+
+          if [ -n "$GPU_FLAG" ]; then
+            echo "Using GPU acceleration (fp16 half precision)"
+          else
             echo "No GPU detected, Real-ESRGAN will run on CPU with --fp32"
           fi
 
