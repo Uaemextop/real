@@ -18,19 +18,24 @@ jobs:
 
       - name: Initialize dashboard
         run: |
-          echo "## 🎬 Video Processing Dashboard" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "⬜⬜⬜⬜⬜⬜⬜ **0 / 7** — Starting…" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Phase | Status | Details |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-------|--------|---------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| 🔧 System Setup | ⏳ Running | Configuring system… |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| 📦 Dependencies | ⏳ Pending | — |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| 📁 Directories | ⏳ Pending | — |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| ⬇️ Downloads | ⏳ Pending | — |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| 🎞️ Processing | ⏳ Pending | — |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| 📦 Packaging | ⏳ Pending | — |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| 🚀 Release | ⏳ Pending | — |" >> "$GITHUB_STEP_SUMMARY"
+          echo "::group::Initialize dashboard"
+          cat > /tmp/dashboard.md <<'EOF'
+          ## 🎬 Video Processing Dashboard
+
+          ⬜⬜⬜⬜⬜⬜⬜ **0 / 7** — Starting…
+
+          | Phase | Status | Details |
+          |-------|--------|---------|
+          | 🔧 System Setup | ⏳ Running | Configuring system… |
+          | 📦 Dependencies | ⏳ Pending | — |
+          | 📁 Directories | ⏳ Pending | — |
+          | ⬇️ Downloads | ⏳ Pending | — |
+          | 🎞️ Processing | ⏳ Pending | — |
+          | 📦 Packaging | ⏳ Pending | — |
+          | 🚀 Release | ⏳ Pending | — |
+          EOF
+          cp /tmp/dashboard.md "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
 
       - name: System optimizations
         run: |
@@ -99,8 +104,8 @@ jobs:
           ELAPSED=$((SECONDS - PHASE_START))
           CPU_COUNT=$(nproc)
           RAM_TOTAL=$(free -h | awk '/Mem:/{print $2}')
-          # Update dashboard — rewrite summary for this phase
-          cat > /tmp/dashboard_setup.md <<EOF
+          echo "::group::Update dashboard"
+          cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
           🟩⬜⬜⬜⬜⬜⬜ **1 / 7** — System configured
@@ -115,7 +120,8 @@ jobs:
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
-          cp /tmp/dashboard_setup.md "$GITHUB_STEP_SUMMARY"
+          cp /tmp/dashboard.md "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
 
       - name: Install dependencies
         run: |
@@ -142,7 +148,8 @@ jobs:
           echo "::endgroup::"
 
           ELAPSED=$((SECONDS - PHASE_START))
-          cat > "$GITHUB_STEP_SUMMARY" <<EOF
+          echo "::group::Update dashboard"
+          cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
           🟩🟩⬜⬜⬜⬜⬜ **2 / 7** — Dependencies installed
@@ -157,6 +164,8 @@ jobs:
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
+          cp /tmp/dashboard.md "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
 
       - name: Create working directories
         run: |
@@ -167,7 +176,8 @@ jobs:
           echo "Directories ready: downloads/, processed/ (tmpfs 50G), zips/"
           echo "::endgroup::"
 
-          cat > "$GITHUB_STEP_SUMMARY" <<EOF
+          echo "::group::Update dashboard"
+          cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
           🟩🟩🟩⬜⬜⬜⬜ **3 / 7** — Directories ready
@@ -182,6 +192,8 @@ jobs:
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
+          cp /tmp/dashboard.md "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
 
       - name: Download videos
         run: |
@@ -250,7 +262,8 @@ jobs:
           ELAPSED=$((SECONDS - PHASE_START))
           total_size=$(du -sh downloads/ 2>/dev/null | awk '{print $1}')
           total_size=${total_size:-0}
-          cat > "$GITHUB_STEP_SUMMARY" <<EOF
+          echo "::group::Update dashboard"
+          cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
           🟩🟩🟩🟩⬜⬜⬜ **4 / 7** — Downloads complete
@@ -265,6 +278,8 @@ jobs:
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
+          cp /tmp/dashboard.md "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
 
       - name: Process videos — crop, denoise, sharpen and re-encode (64 vCPUs)
         run: |
@@ -395,7 +410,8 @@ jobs:
 
           processed_size=$(du -sh processed/ 2>/dev/null | awk '{print $1}')
           processed_size=${processed_size:-0}
-          cat > "$GITHUB_STEP_SUMMARY" <<EOF
+          echo "::group::Update dashboard"
+          cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
           🟩🟩🟩🟩🟩⬜⬜ **5 / 7** — Encoding complete
@@ -410,6 +426,8 @@ jobs:
           | 📦 Packaging | ⏳ Running | Creating zip files… |
           | 🚀 Release | ⏳ Pending | — |
           EOF
+          cp /tmp/dashboard.md "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
 
       - name: Create zip files with size limit
         run: |
@@ -463,7 +481,8 @@ jobs:
           ls -lh zips/
           echo "::endgroup::"
 
-          cat > "$GITHUB_STEP_SUMMARY" <<EOF
+          echo "::group::Update dashboard"
+          cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
           🟩🟩🟩🟩🟩🟩⬜ **6 / 7** — Zips created
@@ -478,6 +497,8 @@ jobs:
           | 📦 Packaging | ✅ Done | ${ELAPSED}s — ${zip_count} zips (${zip_size}) |
           | 🚀 Release | ⏳ Running | Uploading… |
           EOF
+          cp /tmp/dashboard.md "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
 
       - name: Create release and upload zips
         env:
@@ -517,7 +538,8 @@ jobs:
           echo "::endgroup::"
 
           ELAPSED=$((SECONDS - PHASE_START))
-          cat > "$GITHUB_STEP_SUMMARY" <<EOF
+          echo "::group::Update dashboard"
+          cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
           🟩🟩🟩🟩🟩🟩🟩 **7 / 7** — Complete ✅
@@ -535,3 +557,5 @@ jobs:
           ---
           > ✅ **Pipeline complete** — All ${zip_count} zip parts uploaded to release \`${TAG}\`
           EOF
+          cp /tmp/dashboard.md "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
