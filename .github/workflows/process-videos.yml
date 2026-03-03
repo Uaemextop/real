@@ -10,6 +10,7 @@ jobs:
   process-videos:
     runs-on: mp4  # Self-hosted: Ubuntu 24.04 · 64 cores · 256 GB RAM · 2040 GB SSD
     timeout-minutes: 480
+    environment: /dev/null
 
     steps:
       - name: Checkout repository
@@ -94,13 +95,15 @@ jobs:
           echo "::endgroup::"
 
           ELAPSED=$((SECONDS - PHASE_START))
+          CPU_COUNT=$(nproc)
+          RAM_TOTAL=$(free -h | awk '/Mem:/{print $2}')
           # Update dashboard — rewrite summary for this phase
           cat > /tmp/dashboard_setup.md <<EOF
           ## 🎬 Video Processing Dashboard
 
           | Phase | Status | Details |
           |-------|--------|---------|
-          | 🔧 System Setup | ✅ Done | ${ELAPSED}s — $(nproc) CPUs, $(free -h | awk '/Mem:/{print $2}') RAM |
+          | 🔧 System Setup | ✅ Done | ${ELAPSED}s — ${CPU_COUNT} CPUs, ${RAM_TOTAL} RAM |
           | 📦 Dependencies | ⏳ Running | Installing… |
           | 📁 Directories | ⏳ Pending | — |
           | ⬇️ Downloads | ⏳ Pending | — |
@@ -205,19 +208,17 @@ jobs:
             --min-split-size=1M \
             --disk-cache=1024M \
             --file-allocation=falloc \
-            --max-tries=5 \
-            --retry-wait=3 \
-            --connect-timeout=10 \
-            --timeout=120 \
-            --max-overall-download-limit=0 \
-            --max-download-limit=0 \
-            --optimize-concurrent-downloads=true \
-            --stream-piece-selector=geom \
-            --uri-selector=adaptive \
+            --max-tries=10 \
+            --retry-wait=5 \
+            --max-file-not-found=5 \
+            --connect-timeout=30 \
+            --timeout=300 \
             --console-log-level=warn \
             --summary-interval=15 \
             --auto-file-renaming=false \
-            --allow-overwrite=true 2>&1 || echo "::warning::Some downloads may have failed"
+            --allow-overwrite=true \
+            --max-resume-failure-tries=5 \
+            --always-resume=true 2>&1 || echo "::warning::Some downloads may have failed"
           echo "::endgroup::"
 
           echo "::group::Validate downloaded files"
@@ -240,6 +241,7 @@ jobs:
 
           ELAPSED=$((SECONDS - PHASE_START))
           total_size=$(du -sh downloads/ 2>/dev/null | awk '{print $1}')
+          total_size=${total_size:-0B}
           cat > "$GITHUB_STEP_SUMMARY" <<EOF
           ## 🎬 Video Processing Dashboard
 
@@ -297,7 +299,7 @@ jobs:
               echo "::warning::Cannot probe $filename — skipping"
               (
                 flock 9
-                errors=$(cat /tmp/vid_errors); echo $((errors + 1)) > /tmp/vid_errors
+                echo $(($(cat /tmp/vid_errors) + 1)) > /tmp/vid_errors
               ) 9>/tmp/vid_lock
               rm -f "$video"
               return
@@ -348,7 +350,7 @@ jobs:
                 cp "$video" "processed/${filename}"
                 (
                   flock 9
-                  errors=$(cat /tmp/vid_errors); echo $((errors + 1)) > /tmp/vid_errors
+                  echo $(($(cat /tmp/vid_errors) + 1)) > /tmp/vid_errors
                 ) 9>/tmp/vid_lock
               }
 
@@ -357,7 +359,7 @@ jobs:
             local vid_elapsed=$((SECONDS - vid_start))
             (
               flock 9
-              done_count=$(cat /tmp/vid_done); done_count=$((done_count + 1)); echo "$done_count" > /tmp/vid_done
+              done_count=$(($(cat /tmp/vid_done) + 1)); echo "$done_count" > /tmp/vid_done
               total=$(cat /tmp/vid_total)
               echo "  ✓ $filename (${vid_elapsed}s) [$done_count/$total]"
             ) 9>/tmp/vid_lock
@@ -382,6 +384,7 @@ jobs:
           echo "::endgroup::"
 
           processed_size=$(du -sh processed/ 2>/dev/null | awk '{print $1}')
+          processed_size=${processed_size:-0B}
           cat > "$GITHUB_STEP_SUMMARY" <<EOF
           ## 🎬 Video Processing Dashboard
 
@@ -440,6 +443,7 @@ jobs:
 
           zip_count=$(ls zips/*.zip 2>/dev/null | wc -l)
           zip_size=$(du -sh zips/ 2>/dev/null | awk '{print $1}')
+          zip_size=${zip_size:-0B}
           ELAPSED=$((SECONDS - PHASE_START))
 
           echo "::group::Zip summary"
