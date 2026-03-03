@@ -17,14 +17,16 @@ jobs:
 
       - name: System optimizations
         run: |
-          echo "=== CPU: set performance governor (64 cores) ==="
-          for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-            echo performance | sudo tee "$gov" > /dev/null 2>&1 || true
-          done
-          cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null \
-            || echo "(cpufreq not available on this runner)"
-          # Keep ffmpeg worker threads on the same cores — reduces cache-miss migrations
-          sudo sysctl -w kernel.sched_migration_cost_ns=5000000 || true
+          echo "=== Swap (8 GB) ==="
+          if [ ! -f /swapfile ]; then
+            sudo fallocate -l 8G /swapfile
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile
+          fi
+          if ! swapon --show | grep -q /swapfile; then
+            sudo swapon /swapfile
+          fi
+          echo "Swap: $(free -h | grep Swap)"
 
           echo "=== RAM tuning (256 GB) ==="
           # With 256 GB, swap should almost never be needed
@@ -50,16 +52,14 @@ jobs:
           # Raise the per-process limit so 16 parallel ffmpeg jobs never hit EMFILE
           sudo bash -c 'echo "* soft nofile 1048576" >> /etc/security/limits.conf'
           sudo bash -c 'echo "* hard nofile 1048576" >> /etc/security/limits.conf'
-          ulimit -n 1048576 2>/dev/null || true
+          ulimit -n 1048576
 
           echo "=== Disable THP defrag (reduces latency spikes during encoding) ==="
-          echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/defrag \
-            > /dev/null 2>&1 || true
+          echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/defrag > /dev/null
 
-          echo "=== I/O scheduler: none (NVMe SSD optimal), mq-deadline as fallback ==="
+          echo "=== I/O scheduler: none (NVMe SSD optimal) ==="
           for sched in /sys/block/*/queue/scheduler; do
-            echo none        | sudo tee "$sched" > /dev/null 2>&1 || \
-            echo mq-deadline | sudo tee "$sched" > /dev/null 2>&1 || true
+            echo none | sudo tee "$sched" > /dev/null
           done
 
           echo "=== System summary ==="
@@ -119,7 +119,7 @@ jobs:
             --max-connection-per-server=16 \
             --split=16 \
             --min-split-size=1M \
-            --disk-cache=1G \
+            --disk-cache=1024M \
             --file-allocation=falloc \
             --max-tries=5 \
             --retry-wait=3 \
@@ -292,12 +292,12 @@ jobs:
           BODY="Processed $(ls zips/*.zip 2>/dev/null | wc -l || echo 'unknown') zip parts — Ubuntu 24.04 · 64 cores · 256 GB RAM · 2040 GB SSD.
 
           System tuning
-          - CPU governor: performance (64 cores)
+          - Swap: 8 GB swapfile
           - RAM: vm.swappiness=1, dirty_ratio=40, overcommit=1 (256 GB)
           - processed/ on tmpfs RAM-disk (40 GB)
           - NVMe I/O scheduler: none
           - Network: 128 MB TCP buffers, 64 concurrent download streams
-          - aria2c: disk-cache=1G, file-allocation=falloc
+          - aria2c: disk-cache=1024M, file-allocation=falloc
 
           Video processing (16 workers × 4 threads = 64 vCPUs)
           - Black borders removed (cropdetect, 30 s sample)
