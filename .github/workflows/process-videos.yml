@@ -225,7 +225,7 @@ jobs:
           | Phase | Status | Details |
           |-------|--------|---------|
           | 🔧 System Setup | ✅ Done | — |
-          | 📦 Dependencies | ✅ Done | ${ELAPSED}s — ffmpeg, aria2, zip, gh, rclone |
+          | 📦 Dependencies | ✅ Done | ${ELAPSED}s — ffmpeg, aria2, zip, gh |
           | 📁 Directories | ⏳ Running | — |
           | ⬇️ Downloads | ⏳ Pending | — |
           | 🎞️ Processing | ⏳ Pending | — |
@@ -752,7 +752,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Create release and upload zips
-        if: ${{ inputs.upload_github_release == true || inputs.upload_github_release == '' }}
+        if: ${{ inputs.upload_github_release == true }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
