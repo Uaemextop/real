@@ -264,7 +264,7 @@ jobs:
             --max-concurrent-downloads=32 \
             --max-connection-per-server=16 \
             --split=16 \
-            --min-split-size=512K \
+            --min-split-size=1M \
             --disk-cache=1024M \
             --file-allocation=falloc \
             --max-tries=10 \
