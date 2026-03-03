@@ -2,6 +2,22 @@ name: Process Videos
 
 on:
   workflow_dispatch:
+    inputs:
+      upload_mirror:
+        description: 'Cloud mirror for MP4 uploads (dropbox, gdrive, both, or none)'
+        required: false
+        default: 'none'
+        type: choice
+        options:
+          - none
+          - dropbox
+          - gdrive
+          - both
+      cloud_folder:
+        description: 'Destination folder name in cloud storage'
+        required: false
+        default: 'ProcessedVideos'
+        type: string
 
 permissions:
   contents: write
@@ -21,7 +37,7 @@ jobs:
           cat > /tmp/dashboard.md <<'EOF'
           ## 🎬 Video Processing Dashboard
 
-          ⬜⬜⬜⬜⬜⬜ **0 / 6** — Starting…
+          ⬜⬜⬜⬜⬜⬜⬜ **0 / 7** — Starting…
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -29,6 +45,7 @@ jobs:
           | 📁 Directories | ⏳ Pending | — |
           | ⬇️ Downloads | ⏳ Pending | — |
           | 🎞️ Processing | ⏳ Pending | — |
+          | ☁️ Cloud Upload | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -41,8 +58,8 @@ jobs:
 
           echo "::group::apt-get install ffmpeg aria2 zip"
           sudo apt-get update -qq > /dev/null
-          sudo apt-get install -y -qq ffmpeg aria2 zip > /dev/null
-          echo "Installed: ffmpeg $(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}'), aria2 $(aria2c --version 2>/dev/null | head -1 | awk '{print $3}'), zip"
+          sudo apt-get install -y -qq ffmpeg aria2 zip rclone > /dev/null
+          echo "Installed: ffmpeg $(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}'), aria2 $(aria2c --version 2>/dev/null | head -1 | awk '{print $3}'), zip, rclone $(rclone --version 2>/dev/null | head -1 | awk '{print $2}')"
           # Enterprise runners (Azure VMs) have no GPU; hwaccel is not available.
           # Decoding and encoding are both CPU-only (software).
           echo "Runner CPU: $(lscpu 2>/dev/null | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2); print $2}')"
@@ -68,14 +85,15 @@ jobs:
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩⬜⬜⬜⬜⬜ **1 / 6** — Dependencies installed
+          🟩⬜⬜⬜⬜⬜⬜ **1 / 7** — Dependencies installed
 
           | Phase | Status | Details |
           |-------|--------|---------|
-          | 📦 Dependencies | ✅ Done | ${ELAPSED}s — ffmpeg, aria2, zip, gh |
+          | 📦 Dependencies | ✅ Done | ${ELAPSED}s — ffmpeg, aria2, zip, rclone, gh |
           | 📁 Directories | ⏳ Running | — |
           | ⬇️ Downloads | ⏳ Pending | — |
           | 🎞️ Processing | ⏳ Pending | — |
+          | ☁️ Cloud Upload | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -98,7 +116,7 @@ jobs:
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩🟩⬜⬜⬜⬜ **2 / 6** — Directories ready
+          🟩🟩⬜⬜⬜⬜⬜ **2 / 7** — Directories ready
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -106,6 +124,7 @@ jobs:
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ⏳ Running | Preparing… |
           | 🎞️ Processing | ⏳ Pending | — |
+          | ☁️ Cloud Upload | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -185,7 +204,7 @@ jobs:
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩🟩🟩⬜⬜⬜ **3 / 6** — Downloads complete
+          🟩🟩🟩⬜⬜⬜⬜ **3 / 7** — Downloads complete
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -193,6 +212,7 @@ jobs:
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | ${ELAPSED}s — ${valid} files (${total_size}), ${invalid} invalid |
           | 🎞️ Processing | ⏳ Running | 0/${valid} videos… |
+          | ☁️ Cloud Upload | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -358,7 +378,7 @@ jobs:
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩🟩🟩🟩⬜⬜ **4 / 6** — Encoding complete
+          🟩🟩🟩🟩⬜⬜⬜ **4 / 7** — Encoding complete
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -366,6 +386,115 @@ jobs:
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | — |
           | 🎞️ Processing | ✅ Done | ${ELAPSED}s — ${processed_count} videos (${processed_size}), ${error_count} errors |
+          | ☁️ Cloud Upload | ⏳ Running | Uploading… |
+          | 📦 Packaging | ⏳ Pending | — |
+          | 🚀 Release | ⏳ Pending | — |
+          EOF
+          cp /tmp/dashboard.md "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
+
+      - name: Upload processed MP4s to cloud storage
+        if: ${{ inputs.upload_mirror != 'none' && inputs.upload_mirror != '' }}
+        env:
+          RCLONE_DROPBOX_TOKEN: ${{ secrets.RCLONE_DROPBOX_TOKEN }}
+          RCLONE_GDRIVE_TOKEN: ${{ secrets.RCLONE_GDRIVE_TOKEN }}
+        run: |
+          PHASE_START=$SECONDS
+          MIRROR="${{ inputs.upload_mirror }}"
+          FOLDER="${{ inputs.cloud_folder }}"
+          RCLONE_CONFIG_FILE="/tmp/rclone.conf"
+          UPLOAD_ERRORS=0
+
+          # Always remove the rclone config (contains tokens) on exit
+          trap 'rm -f "$RCLONE_CONFIG_FILE"' EXIT
+
+          echo "::group::Configure rclone remotes"
+          if [ "$MIRROR" = "dropbox" ] || [ "$MIRROR" = "both" ]; then
+            if [ -z "$RCLONE_DROPBOX_TOKEN" ]; then
+              echo "::error::RCLONE_DROPBOX_TOKEN secret is not set. See docs/CLOUD-STORAGE-SETUP.md"
+              exit 1
+            fi
+            printf '[dropbox]\ntype = dropbox\ntoken = %s\n\n' "$RCLONE_DROPBOX_TOKEN" >> "$RCLONE_CONFIG_FILE"
+            echo "Dropbox remote configured"
+          fi
+          if [ "$MIRROR" = "gdrive" ] || [ "$MIRROR" = "both" ]; then
+            if [ -z "$RCLONE_GDRIVE_TOKEN" ]; then
+              echo "::error::RCLONE_GDRIVE_TOKEN secret is not set. See docs/CLOUD-STORAGE-SETUP.md"
+              exit 1
+            fi
+            printf '[gdrive]\ntype = drive\nscope = drive\ntoken = %s\n\n' "$RCLONE_GDRIVE_TOKEN" >> "$RCLONE_CONFIG_FILE"
+            echo "Google Drive remote configured"
+          fi
+          echo "::endgroup::"
+
+          mp4_count=$(find processed -maxdepth 1 -name '*.mp4' | wc -l)
+          echo "::group::Upload ${mp4_count} MP4 file(s) to mirror=${MIRROR} folder=${FOLDER}"
+          if [ "$MIRROR" = "dropbox" ] || [ "$MIRROR" = "both" ]; then
+            echo "Uploading to Dropbox:${FOLDER}/ …"
+            rclone copy processed/ "dropbox:${FOLDER}/" \
+              --config "$RCLONE_CONFIG_FILE" \
+              --include '*.mp4' \
+              --transfers=8 \
+              --stats=30s 2>&1 || { echo "::warning::Dropbox upload failed"; UPLOAD_ERRORS=$((UPLOAD_ERRORS + 1)); }
+            echo "Dropbox upload done"
+          fi
+          if [ "$MIRROR" = "gdrive" ] || [ "$MIRROR" = "both" ]; then
+            echo "Uploading to Google Drive:${FOLDER}/ …"
+            rclone copy processed/ "gdrive:${FOLDER}/" \
+              --config "$RCLONE_CONFIG_FILE" \
+              --include '*.mp4' \
+              --transfers=8 \
+              --stats=30s 2>&1 || { echo "::warning::Google Drive upload failed"; UPLOAD_ERRORS=$((UPLOAD_ERRORS + 1)); }
+            echo "Google Drive upload done"
+          fi
+          echo "::endgroup::"
+
+          # Fail the step if any upload encountered errors
+          if [ "$UPLOAD_ERRORS" -gt 0 ]; then
+            echo "::error::${UPLOAD_ERRORS} cloud upload(s) failed. Check warnings above."
+            exit 1
+          fi
+
+          ELAPSED=$((SECONDS - PHASE_START))
+          echo "::group::Update dashboard"
+          CLOUD_DETAIL="${ELAPSED}s — ${mp4_count} MP4(s) → ${MIRROR}:${FOLDER}/"
+          [ "$UPLOAD_ERRORS" -gt 0 ] && CLOUD_DETAIL="${CLOUD_DETAIL} (${UPLOAD_ERRORS} error(s))"
+          echo "✅ Done | ${CLOUD_DETAIL}" > /tmp/cloud_status.txt
+          cat > /tmp/dashboard.md <<EOF
+          ## 🎬 Video Processing Dashboard
+
+          🟩🟩🟩🟩🟩⬜⬜ **5 / 7** — Cloud upload complete
+
+          | Phase | Status | Details |
+          |-------|--------|---------|
+          | 📦 Dependencies | ✅ Done | — |
+          | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
+          | ⬇️ Downloads | ✅ Done | — |
+          | 🎞️ Processing | ✅ Done | — |
+          | ☁️ Cloud Upload | ✅ Done | ${CLOUD_DETAIL} |
+          | 📦 Packaging | ⏳ Running | Creating zip files… |
+          | 🚀 Release | ⏳ Pending | — |
+          EOF
+          cp /tmp/dashboard.md "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
+
+      - name: Skip cloud upload (mirror=none)
+        if: ${{ inputs.upload_mirror == 'none' || inputs.upload_mirror == '' }}
+        run: |
+          echo "⏭️ Skipped | mirror=none" > /tmp/cloud_status.txt
+          echo "::group::Update dashboard"
+          cat > /tmp/dashboard.md <<EOF
+          ## 🎬 Video Processing Dashboard
+
+          🟩🟩🟩🟩🟩⬜⬜ **5 / 7** — Cloud upload skipped
+
+          | Phase | Status | Details |
+          |-------|--------|---------|
+          | 📦 Dependencies | ✅ Done | — |
+          | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
+          | ⬇️ Downloads | ✅ Done | — |
+          | 🎞️ Processing | ✅ Done | — |
+          | ☁️ Cloud Upload | ⏭️ Skipped | mirror=none |
           | 📦 Packaging | ⏳ Running | Creating zip files… |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -452,10 +581,11 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Update dashboard"
+          CLOUD_STATUS=$(cat /tmp/cloud_status.txt 2>/dev/null || echo "⏭️ Skipped | —")
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩🟩🟩🟩🟩⬜ **5 / 6** — Zips created
+          🟩🟩🟩🟩🟩🟩⬜ **6 / 7** — Zips created
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -463,6 +593,7 @@ jobs:
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | — |
           | 🎞️ Processing | ✅ Done | — |
+          | ☁️ Cloud Upload | ${CLOUD_STATUS} |
           | 📦 Packaging | ✅ Done | ${ELAPSED}s — ${zip_count} zips (${zip_size}) |
           | 🚀 Release | ⏳ Running | Uploading… |
           EOF
@@ -505,10 +636,11 @@ jobs:
 
           ELAPSED=$((SECONDS - PHASE_START))
           echo "::group::Update dashboard"
+          CLOUD_STATUS=$(cat /tmp/cloud_status.txt 2>/dev/null || echo "⏭️ Skipped | —")
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩🟩🟩🟩🟩🟩 **6 / 6** — Complete ✅
+          🟩🟩🟩🟩🟩🟩🟩 **7 / 7** — Complete ✅
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -516,6 +648,7 @@ jobs:
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | — |
           | 🎞️ Processing | ✅ Done | — |
+          | ☁️ Cloud Upload | ${CLOUD_STATUS} |
           | 📦 Packaging | ✅ Done | ${zip_count} zip files |
           | 🚀 Release | ✅ Done | ${ELAPSED}s — [\`${TAG}\`](../../releases/tag/${TAG}) |
 
