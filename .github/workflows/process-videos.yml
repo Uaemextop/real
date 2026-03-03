@@ -376,8 +376,10 @@ jobs:
         run: |
           PHASE_START=$SECONDS
 
-          # GitHub release max file size is 2GB (2147483648 bytes).
+          # GitHub release hard limit is 2 GiB (2147483648 bytes) per file.
+          # MAX_SIZE controls how many files are accumulated per zip.
           MAX_SIZE=$((1900 * 1024 * 1024))
+          GITHUB_LIMIT=2147483648
           zip_index=1
           current_size=0
           current_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
@@ -386,6 +388,12 @@ jobs:
           for video in processed/*; do
             [ -f "$video" ] || continue
             file_size=$(stat -c%s "$video")
+
+            # Reject files that can never be uploaded to GitHub releases.
+            if [ "$file_size" -ge "$GITHUB_LIMIT" ]; then
+              echo "  ❌ ERROR: $(basename "$video") is ${file_size} bytes — exceeds GitHub's 2 GiB upload limit" >&2
+              exit 1
+            fi
 
             if [ "$file_size" -ge "$MAX_SIZE" ]; then
               if [ "$current_size" -gt 0 ]; then
@@ -397,6 +405,7 @@ jobs:
               zip_index=$((zip_index + 1))
               current_size=0
               current_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
+              rm -f "$video"
               continue
             fi
 
@@ -412,6 +421,24 @@ jobs:
 
             rm -f "$video"
           done
+          echo "::endgroup::"
+
+          echo "::group::Validating zip sizes (limit: GitHub 2 GiB per file)"
+          oversize_found=0
+          for z in zips/*.zip; do
+            [ -f "$z" ] || continue
+            z_bytes=$(stat -c%s "$z")
+            if [ "$z_bytes" -ge "$GITHUB_LIMIT" ]; then
+              echo "  ❌ $(basename "$z") is ${z_bytes} bytes — exceeds GitHub's 2 GiB upload limit"
+              oversize_found=1
+            else
+              echo "  ✅ $(basename "$z") is ${z_bytes} bytes — OK"
+            fi
+          done
+          if [ "$oversize_found" -eq 1 ]; then
+            echo "ERROR: One or more zip files exceed GitHub's 2 GiB upload limit." >&2
+            exit 1
+          fi
           echo "::endgroup::"
 
           zip_count=$(ls zips/*.zip 2>/dev/null | wc -l)
