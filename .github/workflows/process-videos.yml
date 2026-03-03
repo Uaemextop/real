@@ -182,7 +182,7 @@ jobs:
             # 2. Cropdetect over first 30 s — most frequent crop wins
             crop_info=$(ffmpeg -threads 2 -i "$video" -t 30 \
               -vf cropdetect=24:16:0 -f null - 2>&1 \
-              | grep -oP 'crop=\S+' | sort | uniq -c | sort -rn | head -1 \
+              | grep -oP 'crop=[0-9]+:[0-9]+:[0-9]+:[0-9]+' | sort | uniq -c | sort -rn | head -1 \
               | awk '{print $2}' || echo "")
 
             # 3. Validate crop and build filter chain: [crop,] hqdn3d, unsharp
