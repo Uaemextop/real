@@ -1,0 +1,156 @@
+name: Upload ZIPs to Cloud
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_mirror:
+        description: 'Cloud mirror destination (dropbox, gdrive, or both)'
+        required: true
+        default: 'gdrive'
+        type: choice
+        options:
+          - dropbox
+          - gdrive
+          - both
+      cloud_folder:
+        description: 'Destination folder name in cloud storage'
+        required: false
+        default: 'Videos'
+        type: string
+      downloads_txt:
+        description: 'Path to the txt file with zip download URLs (one per line)'
+        required: false
+        default: 'downloads.txt'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  upload-to-cloud:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          echo "::group::Install aria2, unzip, rclone"
+          sudo apt-get update -qq > /dev/null
+          sudo apt-get install -y -qq aria2 unzip rclone > /dev/null
+          echo "aria2: $(aria2c --version 2>/dev/null | head -1 | awk '{print $3}')"
+          echo "rclone: $(rclone --version 2>/dev/null | head -1 | awk '{print $2}')"
+          echo "::endgroup::"
+
+      - name: Download zip files from downloads.txt
+        run: |
+          DOWNLOADS_FILE="${{ inputs.downloads_txt }}"
+          if [ ! -f "$DOWNLOADS_FILE" ]; then
+            echo "::error::File not found: $DOWNLOADS_FILE"
+            exit 1
+          fi
+
+          total=$(grep -c 'http' "$DOWNLOADS_FILE" || true)
+          echo "::group::Download ${total} zip file(s) from ${DOWNLOADS_FILE}"
+          mkdir -p zips
+
+          aria2c \
+            --input-file="$DOWNLOADS_FILE" \
+            --dir=zips \
+            --max-concurrent-downloads=8 \
+            --max-connection-per-server=4 \
+            --split=4 \
+            --min-split-size=1M \
+            --file-allocation=none \
+            --max-tries=10 \
+            --retry-wait=5 \
+            --connect-timeout=30 \
+            --timeout=300 \
+            --allow-overwrite=true 2>&1 || echo "::warning::Some downloads may have failed"
+
+          downloaded=$(find zips -maxdepth 1 -name '*.zip' | wc -l)
+          echo "Downloaded ${downloaded} zip file(s)"
+          echo "::endgroup::"
+
+      - name: Extract MP4 files from zips
+        run: |
+          echo "::group::Extract .mp4 files from zip archives"
+          mkdir -p extracted
+
+          for zip_file in zips/*.zip; do
+            [ -f "$zip_file" ] || continue
+            echo "Extracting: $(basename "$zip_file")"
+            unzip -o -j "$zip_file" '*.mp4' -d extracted 2>&1 || \
+              echo "::warning::Failed to extract some files from $(basename "$zip_file")"
+          done
+
+          mp4_count=$(find extracted -maxdepth 1 -name '*.mp4' | wc -l)
+          echo "Extracted ${mp4_count} .mp4 file(s)"
+          if [ "$mp4_count" -eq 0 ]; then
+            echo "::error::No .mp4 files found after extraction."
+            exit 1
+          fi
+          echo "::endgroup::"
+
+      - name: Configure rclone and upload to cloud
+        env:
+          RCLONE_DROPBOX_TOKEN: ${{ secrets.RCLONE_DROPBOX_TOKEN }}
+          RCLONE_GDRIVE_TOKEN: ${{ secrets.RCLONE_GDRIVE_TOKEN }}
+        run: |
+          MIRROR="${{ inputs.upload_mirror }}"
+          FOLDER="${{ inputs.cloud_folder }}"
+          RCLONE_CONFIG_FILE="/tmp/rclone.conf"
+          UPLOAD_ERRORS=0
+
+          # Always remove the rclone config (contains tokens) on exit
+          trap 'rm -f "$RCLONE_CONFIG_FILE"' EXIT
+
+          echo "::group::Configure rclone remotes"
+          if [ "$MIRROR" = "dropbox" ] || [ "$MIRROR" = "both" ]; then
+            if [ -z "$RCLONE_DROPBOX_TOKEN" ]; then
+              echo "::error::RCLONE_DROPBOX_TOKEN secret is not set. See docs/CLOUD-STORAGE-SETUP.md"
+              exit 1
+            fi
+            printf '[dropbox]\ntype = dropbox\ntoken = %s\n\n' "$RCLONE_DROPBOX_TOKEN" >> "$RCLONE_CONFIG_FILE"
+            echo "Dropbox remote configured"
+          fi
+          if [ "$MIRROR" = "gdrive" ] || [ "$MIRROR" = "both" ]; then
+            if [ -z "$RCLONE_GDRIVE_TOKEN" ]; then
+              echo "::error::RCLONE_GDRIVE_TOKEN secret is not set. See docs/CLOUD-STORAGE-SETUP.md"
+              exit 1
+            fi
+            printf '[gdrive]\ntype = drive\nscope = drive\ntoken = %s\n\n' "$RCLONE_GDRIVE_TOKEN" >> "$RCLONE_CONFIG_FILE"
+            echo "Google Drive remote configured"
+          fi
+          echo "::endgroup::"
+
+          mp4_count=$(find extracted -maxdepth 1 -name '*.mp4' | wc -l)
+          echo "::group::Upload ${mp4_count} MP4 file(s) to mirror=${MIRROR} folder=${FOLDER}"
+          if [ "$MIRROR" = "dropbox" ] || [ "$MIRROR" = "both" ]; then
+            echo "Uploading to Dropbox:${FOLDER}/ …"
+            rclone copy extracted/ "dropbox:${FOLDER}/" \
+              --config "$RCLONE_CONFIG_FILE" \
+              --include '*.mp4' \
+              --transfers=8 \
+              --stats=30s 2>&1 || { echo "::warning::Dropbox upload failed"; UPLOAD_ERRORS=$((UPLOAD_ERRORS + 1)); }
+            echo "Dropbox upload done"
+          fi
+          if [ "$MIRROR" = "gdrive" ] || [ "$MIRROR" = "both" ]; then
+            echo "Uploading to Google Drive:${FOLDER}/ …"
+            rclone copy extracted/ "gdrive:${FOLDER}/" \
+              --config "$RCLONE_CONFIG_FILE" \
+              --include '*.mp4' \
+              --transfers=8 \
+              --stats=30s 2>&1 || { echo "::warning::Google Drive upload failed"; UPLOAD_ERRORS=$((UPLOAD_ERRORS + 1)); }
+            echo "Google Drive upload done"
+          fi
+          echo "::endgroup::"
+
+          if [ "$UPLOAD_ERRORS" -gt 0 ]; then
+            echo "::error::${UPLOAD_ERRORS} cloud upload(s) failed. Check warnings above."
+            exit 1
+          fi
+
+          echo "✅ ${mp4_count} MP4(s) uploaded to ${MIRROR}:${FOLDER}/" >> "$GITHUB_STEP_SUMMARY"
