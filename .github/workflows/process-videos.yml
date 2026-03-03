@@ -2,6 +2,23 @@ name: Process Videos
 
 on:
   workflow_dispatch:
+    inputs:
+      upload_github_release:
+        description: 'Upload to GitHub Releases'
+        type: boolean
+        default: true
+      upload_dropbox:
+        description: 'Upload to Dropbox'
+        type: boolean
+        default: false
+      upload_gdrive:
+        description: 'Upload to Google Drive'
+        type: boolean
+        default: false
+      cloud_folder:
+        description: 'Folder name in Dropbox/Google Drive'
+        type: string
+        default: 'ProcessedVideos'
 
 permissions:
   contents: write
@@ -22,7 +39,7 @@ jobs:
           cat > /tmp/dashboard.md <<'EOF'
           ## 🎬 Video Processing Dashboard
 
-          ⬜⬜⬜⬜⬜⬜⬜ **0 / 7** — Starting…
+          ⬜⬜⬜⬜⬜⬜⬜⬜ **0 / 8** — Starting…
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -31,6 +48,7 @@ jobs:
           | 📁 Directories | ⏳ Pending | — |
           | ⬇️ Downloads | ⏳ Pending | — |
           | 🎞️ Processing | ⏳ Pending | — |
+          | ☁️ Cloud Upload | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -144,7 +162,7 @@ jobs:
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩⬜⬜⬜⬜⬜⬜ **1 / 7** — System configured
+          🟩⬜⬜⬜⬜⬜⬜⬜ **1 / 8** — System configured
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -153,6 +171,7 @@ jobs:
           | 📁 Directories | ⏳ Pending | — |
           | ⬇️ Downloads | ⏳ Pending | — |
           | 🎞️ Processing | ⏳ Pending | — |
+          | ☁️ Cloud Upload | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -183,12 +202,25 @@ jobs:
           fi
           echo "::endgroup::"
 
+          echo "::group::rclone"
+          if [ "${{ inputs.upload_dropbox }}" = "true" ] || [ "${{ inputs.upload_gdrive }}" = "true" ]; then
+            if ! command -v rclone &>/dev/null; then
+              curl -fsSL https://rclone.org/install.sh | sudo bash > /dev/null 2>&1
+              echo "Installed rclone $(rclone version --check 2>/dev/null | head -1 || rclone --version 2>/dev/null | head -1)"
+            else
+              echo "rclone already available: $(rclone --version 2>/dev/null | head -1)"
+            fi
+          else
+            echo "Cloud upload not selected — skipping rclone install"
+          fi
+          echo "::endgroup::"
+
           ELAPSED=$((SECONDS - PHASE_START))
           echo "::group::Update dashboard"
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩🟩⬜⬜⬜⬜⬜ **2 / 7** — Dependencies installed
+          🟩🟩⬜⬜⬜⬜⬜⬜ **2 / 8** — Dependencies installed
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -197,6 +229,7 @@ jobs:
           | 📁 Directories | ⏳ Running | — |
           | ⬇️ Downloads | ⏳ Pending | — |
           | 🎞️ Processing | ⏳ Pending | — |
+          | ☁️ Cloud Upload | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -219,7 +252,7 @@ jobs:
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩🟩🟩⬜⬜⬜⬜ **3 / 7** — Directories ready
+          🟩🟩🟩⬜⬜⬜⬜⬜ **3 / 8** — Directories ready
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -228,6 +261,7 @@ jobs:
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ⏳ Running | Preparing… |
           | 🎞️ Processing | ⏳ Pending | — |
+          | ☁️ Cloud Upload | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -344,7 +378,7 @@ jobs:
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩🟩🟩🟩⬜⬜⬜ **4 / 7** — Downloads complete
+          🟩🟩🟩🟩⬜⬜⬜⬜ **4 / 8** — Downloads complete
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -353,6 +387,7 @@ jobs:
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | ${ELAPSED}s — ${valid} files (${total_size}), ${invalid} invalid, ${DL_SPEED} Mbit/s |
           | 🎞️ Processing | ⏳ Running | 0/${valid} videos… |
+          | ☁️ Cloud Upload | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -513,7 +548,7 @@ jobs:
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩🟩🟩🟩🟩⬜⬜ **5 / 7** — Encoding complete
+          🟩🟩🟩🟩🟩⬜⬜⬜ **5 / 8** — Encoding complete
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -522,6 +557,122 @@ jobs:
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | — |
           | 🎞️ Processing | ✅ Done | ${ELAPSED}s — ${processed_count} videos (${processed_size}), ${error_count} errors |
+          | ☁️ Cloud Upload | ⏳ Running | Uploading to cloud… |
+          | 📦 Packaging | ⏳ Pending | — |
+          | 🚀 Release | ⏳ Pending | — |
+          EOF
+          cp /tmp/dashboard.md "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
+
+      - name: Upload to cloud storage (rclone)
+        if: ${{ inputs.upload_dropbox == true || inputs.upload_gdrive == true }}
+        env:
+          RCLONE_DROPBOX_TOKEN: ${{ secrets.RCLONE_DROPBOX_TOKEN }}
+          RCLONE_GDRIVE_TOKEN: ${{ secrets.RCLONE_GDRIVE_TOKEN }}
+        run: |
+          PHASE_START=$SECONDS
+          CLOUD_FOLDER="${{ inputs.cloud_folder }}"
+          CLOUD_FOLDER="${CLOUD_FOLDER:-ProcessedVideos}"
+          TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
+          DEST_FOLDER="${CLOUD_FOLDER}/${TIMESTAMP}"
+          uploaded_dropbox=0
+          uploaded_gdrive=0
+          mp4_count=$(find processed/ -maxdepth 1 -name '*.mp4' -type f 2>/dev/null | wc -l)
+
+          echo "::group::Configure rclone remotes"
+          mkdir -p ~/.config/rclone
+
+          # Build rclone config from secrets
+          RCLONE_CFG=""
+
+          if [ "${{ inputs.upload_dropbox }}" = "true" ]; then
+            if [ -z "$RCLONE_DROPBOX_TOKEN" ]; then
+              echo "::warning::Dropbox upload selected but RCLONE_DROPBOX_TOKEN secret is not set — skipping"
+            else
+              RCLONE_CFG="${RCLONE_CFG}
+          [dropbox]
+          type = dropbox
+          token = ${RCLONE_DROPBOX_TOKEN}
+          "
+              echo "Configured rclone remote: dropbox"
+            fi
+          fi
+
+          if [ "${{ inputs.upload_gdrive }}" = "true" ]; then
+            if [ -z "$RCLONE_GDRIVE_TOKEN" ]; then
+              echo "::warning::Google Drive upload selected but RCLONE_GDRIVE_TOKEN secret is not set — skipping"
+            else
+              RCLONE_CFG="${RCLONE_CFG}
+          [gdrive]
+          type = drive
+          token = ${RCLONE_GDRIVE_TOKEN}
+          "
+              echo "Configured rclone remote: gdrive"
+            fi
+          fi
+
+          echo "$RCLONE_CFG" > ~/.config/rclone/rclone.conf
+          chmod 600 ~/.config/rclone/rclone.conf
+          echo "::endgroup::"
+
+          # Upload .mp4 files from processed/ to Dropbox
+          if [ "${{ inputs.upload_dropbox }}" = "true" ] && [ -n "$RCLONE_DROPBOX_TOKEN" ]; then
+            echo "::group::Upload to Dropbox → /${DEST_FOLDER}/ (${mp4_count} files)"
+            rclone copy processed/ "dropbox:${DEST_FOLDER}/" \
+              --include "*.mp4" \
+              --transfers 8 \
+              --checkers 4 \
+              --retries 3 \
+              --retries-sleep 5s \
+              --stats 30s \
+              --stats-one-line \
+              -v 2>&1 || echo "::warning::Some Dropbox uploads may have failed"
+            uploaded_dropbox=$(rclone ls "dropbox:${DEST_FOLDER}/" --include "*.mp4" 2>/dev/null | wc -l)
+            echo "Uploaded ${uploaded_dropbox} files to Dropbox"
+            echo "::endgroup::"
+          fi
+
+          # Upload .mp4 files from processed/ to Google Drive
+          if [ "${{ inputs.upload_gdrive }}" = "true" ] && [ -n "$RCLONE_GDRIVE_TOKEN" ]; then
+            echo "::group::Upload to Google Drive → /${DEST_FOLDER}/ (${mp4_count} files)"
+            rclone copy processed/ "gdrive:${DEST_FOLDER}/" \
+              --include "*.mp4" \
+              --transfers 8 \
+              --checkers 4 \
+              --retries 3 \
+              --retries-sleep 5s \
+              --stats 30s \
+              --stats-one-line \
+              --drive-chunk-size 64M \
+              -v 2>&1 || echo "::warning::Some Google Drive uploads may have failed"
+            uploaded_gdrive=$(rclone ls "gdrive:${DEST_FOLDER}/" --include "*.mp4" 2>/dev/null | wc -l)
+            echo "Uploaded ${uploaded_gdrive} files to Google Drive"
+            echo "::endgroup::"
+          fi
+
+          # Clean up rclone config (contains tokens)
+          rm -f ~/.config/rclone/rclone.conf
+
+          ELAPSED=$((SECONDS - PHASE_START))
+          cloud_summary=""
+          [ "$uploaded_dropbox" -gt 0 ] && cloud_summary="Dropbox: ${uploaded_dropbox} files"
+          [ "$uploaded_gdrive" -gt 0 ] && cloud_summary="${cloud_summary:+${cloud_summary}, }GDrive: ${uploaded_gdrive} files"
+          cloud_summary="${cloud_summary:-No cloud uploads}"
+
+          echo "::group::Update dashboard"
+          cat > /tmp/dashboard.md <<EOF
+          ## 🎬 Video Processing Dashboard
+
+          🟩🟩🟩🟩🟩🟩⬜⬜ **6 / 8** — Cloud upload complete
+
+          | Phase | Status | Details |
+          |-------|--------|---------|
+          | 🔧 System Setup | ✅ Done | — |
+          | 📦 Dependencies | ✅ Done | — |
+          | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
+          | ⬇️ Downloads | ✅ Done | — |
+          | 🎞️ Processing | ✅ Done | — |
+          | ☁️ Cloud Upload | ✅ Done | ${ELAPSED}s — ${cloud_summary} |
           | 📦 Packaging | ⏳ Running | Creating zip files… |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -584,7 +735,7 @@ jobs:
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩🟩🟩🟩🟩🟩⬜ **6 / 7** — Zips created
+          🟩🟩🟩🟩🟩🟩🟩⬜ **7 / 8** — Zips created
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -593,6 +744,7 @@ jobs:
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | — |
           | 🎞️ Processing | ✅ Done | — |
+          | ☁️ Cloud Upload | ✅ Done | — |
           | 📦 Packaging | ✅ Done | ${ELAPSED}s — ${zip_count} zips (${zip_size}) |
           | 🚀 Release | ⏳ Running | Uploading… |
           EOF
@@ -600,6 +752,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Create release and upload zips
+        if: ${{ inputs.upload_github_release == true }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -644,7 +797,7 @@ jobs:
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩🟩🟩🟩🟩🟩🟩 **7 / 7** — Complete ✅
+          🟩🟩🟩🟩🟩🟩🟩🟩 **8 / 8** — Complete ✅
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -653,6 +806,7 @@ jobs:
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | — |
           | 🎞️ Processing | ✅ Done | — |
+          | ☁️ Cloud Upload | ✅ Done | — |
           | 📦 Packaging | ✅ Done | ${zip_count} zip files |
           | 🚀 Release | ✅ Done | ${ELAPSED}s — [\`${TAG}\`](../../releases/tag/${TAG}) |
 
