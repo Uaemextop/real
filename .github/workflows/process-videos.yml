@@ -10,115 +10,203 @@ jobs:
   process-videos:
     runs-on: mp4  # Self-hosted: Ubuntu 24.04 · 64 cores · 256 GB RAM · 2040 GB SSD
     timeout-minutes: 480
+    environment: /dev/null
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Initialize dashboard
+        run: |
+          echo "## 🎬 Video Processing Dashboard" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "⬜⬜⬜⬜⬜⬜⬜ **0 / 7** — Starting…" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Phase | Status | Details |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|--------|---------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 🔧 System Setup | ⏳ Running | Configuring system… |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 📦 Dependencies | ⏳ Pending | — |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 📁 Directories | ⏳ Pending | — |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| ⬇️ Downloads | ⏳ Pending | — |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 🎞️ Processing | ⏳ Pending | — |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 📦 Packaging | ⏳ Pending | — |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 🚀 Release | ⏳ Pending | — |" >> "$GITHUB_STEP_SUMMARY"
+
       - name: System optimizations
         run: |
-          echo "=== Swap (8 GB) ==="
+          PHASE_START=$SECONDS
+
+          echo "::group::Swap (8 GB)"
           if [ ! -f /swapfile ]; then
             sudo fallocate -l 8G /swapfile
             sudo chmod 600 /swapfile
-            sudo mkswap /swapfile
+            sudo mkswap /swapfile > /dev/null
           fi
           if ! swapon --show | grep -q /swapfile; then
             sudo swapon /swapfile
           fi
           echo "Swap: $(free -h | grep Swap)"
+          echo "::endgroup::"
 
-          echo "=== RAM tuning (256 GB) ==="
-          # With 256 GB, swap should almost never be needed
-          sudo sysctl -w vm.swappiness=1              || true
-          # Buffer up to 40% of RAM as dirty pages before flush — huge write throughput
-          sudo sysctl -w vm.dirty_ratio=40             || true
-          sudo sysctl -w vm.dirty_background_ratio=3   || true
-          # Retain inode/dentry cache aggressively (fast repeated file-metadata lookups)
-          sudo sysctl -w vm.vfs_cache_pressure=50      || true
-          # Allow memory over-commit (needed for 16 parallel ffmpeg allocations)
-          sudo sysctl -w vm.overcommit_memory=1        || true
+          echo "::group::RAM tuning (256 GB)"
+          sudo sysctl -w vm.swappiness=1              > /dev/null || true
+          sudo sysctl -w vm.dirty_ratio=40             > /dev/null || true
+          sudo sysctl -w vm.dirty_background_ratio=3   > /dev/null || true
+          sudo sysctl -w vm.vfs_cache_pressure=50      > /dev/null || true
+          sudo sysctl -w vm.overcommit_memory=1        > /dev/null || true
+          echo "vm.swappiness=1, dirty_ratio=40, vfs_cache_pressure=50, overcommit=1"
+          echo "::endgroup::"
 
-          echo "=== Network tuning (64 concurrent downloads) ==="
-          sudo sysctl -w net.core.rmem_max=134217728             || true
-          sudo sysctl -w net.core.wmem_max=134217728             || true
-          sudo sysctl -w net.ipv4.tcp_rmem='4096 87380 134217728' || true
-          sudo sysctl -w net.ipv4.tcp_wmem='4096 65536 134217728' || true
-          sudo sysctl -w net.core.netdev_max_backlog=5000        || true
-          sudo sysctl -w net.ipv4.tcp_window_scaling=1           || true
-          sudo sysctl -w net.ipv4.tcp_tw_reuse=1                 || true
+          echo "::group::Network tuning (64 concurrent downloads)"
+          sudo sysctl -w net.core.rmem_max=134217728             > /dev/null || true
+          sudo sysctl -w net.core.wmem_max=134217728             > /dev/null || true
+          sudo sysctl -w net.ipv4.tcp_rmem='4096 87380 134217728' > /dev/null || true
+          sudo sysctl -w net.ipv4.tcp_wmem='4096 65536 134217728' > /dev/null || true
+          sudo sysctl -w net.core.netdev_max_backlog=5000        > /dev/null || true
+          sudo sysctl -w net.ipv4.tcp_window_scaling=1           > /dev/null || true
+          sudo sysctl -w net.ipv4.tcp_tw_reuse=1                 > /dev/null || true
+          echo "TCP buffers 128 MB, backlog 5000, tw_reuse=1"
+          echo "::endgroup::"
 
-          echo "=== Disable THP defrag (reduces latency spikes during encoding) ==="
+          echo "::group::Disable THP defrag"
           if [ -f /sys/kernel/mm/transparent_hugepage/defrag ]; then
             echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/defrag > /dev/null 2>&1 \
-              && echo "THP defrag: $(cat /sys/kernel/mm/transparent_hugepage/defrag)" \
+              && echo "THP defrag: madvise" \
               || echo "THP defrag: write failed (skipped)"
           else
             echo "THP defrag: not available (skipped)"
           fi
+          echo "::endgroup::"
 
-          echo "=== I/O scheduler: none (NVMe SSD optimal) ==="
+          echo "::group::I/O scheduler (NVMe SSD)"
           for dev in /sys/block/*/queue/scheduler; do
             blk=$(echo "$dev" | cut -d/ -f4)
-            # Skip virtual loop devices — only tune real disks
             case "$blk" in loop*) continue ;; esac
             if echo none | sudo tee "$dev" > /dev/null 2>&1; then
-              echo "  $blk: $(cat "$dev")"
+              echo "  $blk → none"
             else
-              echo "  $blk: scheduler unchanged ($(cat "$dev"))"
+              echo "  $blk → unchanged"
             fi
           done
+          echo "::endgroup::"
 
-          echo "=== System summary ==="
+          echo "::group::System summary"
           echo "CPUs : $(nproc)"
           echo "RAM  :"; free -h
           echo "Disk :"; df -h .
+          echo "::endgroup::"
+
+          ELAPSED=$((SECONDS - PHASE_START))
+          CPU_COUNT=$(nproc)
+          RAM_TOTAL=$(free -h | awk '/Mem:/{print $2}')
+          # Update dashboard — rewrite summary for this phase
+          cat > /tmp/dashboard_setup.md <<EOF
+          ## 🎬 Video Processing Dashboard
+
+          🟩⬜⬜⬜⬜⬜⬜ **1 / 7** — System configured
+
+          | Phase | Status | Details |
+          |-------|--------|---------|
+          | 🔧 System Setup | ✅ Done | ${ELAPSED}s — ${CPU_COUNT} CPUs, ${RAM_TOTAL} RAM |
+          | 📦 Dependencies | ⏳ Running | Installing… |
+          | 📁 Directories | ⏳ Pending | — |
+          | ⬇️ Downloads | ⏳ Pending | — |
+          | 🎞️ Processing | ⏳ Pending | — |
+          | 📦 Packaging | ⏳ Pending | — |
+          | 🚀 Release | ⏳ Pending | — |
+          EOF
+          cp /tmp/dashboard_setup.md "$GITHUB_STEP_SUMMARY"
 
       - name: Install dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg aria2 zip
-          # Install GitHub CLI if not already available (needed for release creation)
+          PHASE_START=$SECONDS
+
+          echo "::group::apt-get install ffmpeg aria2 zip"
+          sudo apt-get update -qq > /dev/null
+          sudo apt-get install -y -qq ffmpeg aria2 zip > /dev/null
+          echo "Installed: ffmpeg $(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}'), aria2 $(aria2c --version 2>/dev/null | head -1 | awk '{print $3}'), zip"
+          echo "::endgroup::"
+
+          echo "::group::GitHub CLI"
           if ! command -v gh &>/dev/null; then
             curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
               | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
             echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
               | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq gh
+            sudo apt-get update -qq > /dev/null
+            sudo apt-get install -y -qq gh > /dev/null
+            echo "Installed GitHub CLI"
+          else
+            echo "GitHub CLI already available: $(gh --version | head -1)"
           fi
+          echo "::endgroup::"
+
+          ELAPSED=$((SECONDS - PHASE_START))
+          cat > "$GITHUB_STEP_SUMMARY" <<EOF
+          ## 🎬 Video Processing Dashboard
+
+          🟩🟩⬜⬜⬜⬜⬜ **2 / 7** — Dependencies installed
+
+          | Phase | Status | Details |
+          |-------|--------|---------|
+          | 🔧 System Setup | ✅ Done | — |
+          | 📦 Dependencies | ✅ Done | ${ELAPSED}s — ffmpeg, aria2, zip, gh |
+          | 📁 Directories | ⏳ Running | — |
+          | ⬇️ Downloads | ⏳ Pending | — |
+          | 🎞️ Processing | ⏳ Pending | — |
+          | 📦 Packaging | ⏳ Pending | — |
+          | 🚀 Release | ⏳ Pending | — |
+          EOF
 
       - name: Create working directories
         run: |
+          echo "::group::Create directories and mount tmpfs"
           mkdir -p downloads processed zips
-          # 256 GB RAM: mount processed/ as a RAM-disk.
-          # Peak usage = 16 parallel outputs × ~2.5 GB each ≈ 40 GB; 50 G gives headroom.
-          # Encode output writes at RAM speed, eliminating SSD write latency.
           echo "Mounting processed/ on tmpfs (50G)..."
           sudo mount -t tmpfs -o size=50G tmpfs processed/
+          echo "Directories ready: downloads/, processed/ (tmpfs 50G), zips/"
+          echo "::endgroup::"
+
+          cat > "$GITHUB_STEP_SUMMARY" <<EOF
+          ## 🎬 Video Processing Dashboard
+
+          🟩🟩🟩⬜⬜⬜⬜ **3 / 7** — Directories ready
+
+          | Phase | Status | Details |
+          |-------|--------|---------|
+          | 🔧 System Setup | ✅ Done | — |
+          | 📦 Dependencies | ✅ Done | — |
+          | 📁 Directories | ✅ Done | processed/ on tmpfs (50G) |
+          | ⬇️ Downloads | ⏳ Running | Preparing… |
+          | 🎞️ Processing | ⏳ Pending | — |
+          | 📦 Packaging | ⏳ Pending | — |
+          | 🚀 Release | ⏳ Pending | — |
+          EOF
 
       - name: Download videos
         run: |
+          PHASE_START=$SECONDS
           total=$(wc -l < video_urls.txt)
-          echo "Preparing $total downloads..."
 
-          # Build an aria2c input file for batch concurrent downloading
+          echo "::group::Build aria2c input file ($total URLs)"
           count=0
+          skipped=0
           while IFS='|' read -r url rest || [ -n "$url" ]; do
             count=$((count + 1))
-            # Strip leading number prefix (e.g. "1. https://..." -> "https://...")
             url=$(echo "$url" | sed -E 's/^[0-9]+\.\s*//')
-            [ -z "$url" ] && continue
-            # Extract filename from URL
+            if [ -z "$url" ]; then
+              skipped=$((skipped + 1))
+              continue
+            fi
             filename=$(basename "$url")
-            # Make filename unique by prepending a counter
             unique_name="${count}_${filename}"
-            # aria2c input file format: URL\n  out=filename\n
             echo "$url"
             echo "  out=${unique_name}"
           done < video_urls.txt > /tmp/aria2_downloads.txt
+          echo "Prepared $count URLs ($skipped empty lines skipped)"
+          echo "::endgroup::"
 
-          echo "Starting batch download of $total files with aria2c (multi-threaded)..."
+          echo "::group::Download with aria2c (64 concurrent, 16 connections/server)"
           aria2c \
             --input-file=/tmp/aria2_downloads.txt \
             --dir=downloads \
@@ -128,97 +216,137 @@ jobs:
             --min-split-size=1M \
             --disk-cache=1024M \
             --file-allocation=falloc \
-            --max-tries=5 \
-            --retry-wait=3 \
-            --connect-timeout=10 \
-            --timeout=120 \
-            --max-overall-download-limit=0 \
-            --max-download-limit=0 \
-            --optimize-concurrent-downloads=true \
-            --stream-piece-selector=geom \
-            --uri-selector=adaptive \
+            --max-tries=10 \
+            --retry-wait=5 \
+            --max-file-not-found=5 \
+            --connect-timeout=30 \
+            --timeout=300 \
             --console-log-level=warn \
             --summary-interval=15 \
             --auto-file-renaming=false \
-            --allow-overwrite=true || echo "WARNING: Some downloads may have failed"
+            --allow-overwrite=true \
+            --max-resume-failure-tries=5 \
+            --always-resume=true 2>&1 || echo "::warning::Some downloads may have failed"
+          echo "::endgroup::"
 
-          echo "Downloaded $(ls downloads/ | wc -l) videos"
+          echo "::group::Validate downloaded files"
+          downloaded=$(find downloads -maxdepth 1 -type f | wc -l)
+          valid=0
+          invalid=0
+          for f in downloads/*; do
+            [ -f "$f" ] || continue
+            fsize=$(stat -c%s "$f" 2>/dev/null || echo 0)
+            if [ "$fsize" -lt 1024 ]; then
+              echo "::warning::File too small (${fsize}B), removing: $(basename "$f")"
+              rm -f "$f"
+              invalid=$((invalid + 1))
+            else
+              valid=$((valid + 1))
+            fi
+          done
+          echo "Valid: $valid, Invalid/removed: $invalid, Total downloaded: $downloaded"
+          echo "::endgroup::"
 
-      - name: Process videos - crop, denoise, sharpen and re-encode (64 vCPUs)
+          ELAPSED=$((SECONDS - PHASE_START))
+          total_size=$(du -sh downloads/ 2>/dev/null | awk '{print $1}')
+          total_size=${total_size:-0}
+          cat > "$GITHUB_STEP_SUMMARY" <<EOF
+          ## 🎬 Video Processing Dashboard
+
+          🟩🟩🟩🟩⬜⬜⬜ **4 / 7** — Downloads complete
+
+          | Phase | Status | Details |
+          |-------|--------|---------|
+          | 🔧 System Setup | ✅ Done | — |
+          | 📦 Dependencies | ✅ Done | — |
+          | 📁 Directories | ✅ Done | processed/ on tmpfs (50G) |
+          | ⬇️ Downloads | ✅ Done | ${ELAPSED}s — ${valid} files (${total_size}), ${invalid} invalid |
+          | 🎞️ Processing | ⏳ Running | 0/${valid} videos… |
+          | 📦 Packaging | ⏳ Pending | — |
+          | 🚀 Release | ⏳ Pending | — |
+          EOF
+
+      - name: Process videos — crop, denoise, sharpen and re-encode (64 vCPUs)
         run: |
-          # 16 parallel jobs × 4 threads each = 64 vCPUs fully utilised
+          PHASE_START=$SECONDS
+
           PARALLEL_JOBS=16
           THREADS_PER_JOB=4
 
-          # Filter chain applied to every video (order matters):
-          #   hqdn3d=3:2:5:3.5         — light spatial + moderate temporal noise reduction
-          #   cas=0.4                   — Contrast Adaptive Sharpen (artifact-free edge sharpening)
-          #   eq=contrast=1.03:…        — subtle contrast & saturation boost for vivid output
           ENHANCE_FILTERS="hqdn3d=3:2:5:3.5,cas=0.4,eq=contrast=1.03:saturation=1.08"
 
+          echo "::group::Encoder configuration"
           echo "Encoder  : libx264 preset slow CRF 15 · profile high · tune film"
           echo "Workers  : ${PARALLEL_JOBS} jobs × ${THREADS_PER_JOB} threads = 64 vCPUs"
           echo "Filters  : crop (auto) → hqdn3d (denoise) → cas (sharpen) → eq (color)"
+          echo "::endgroup::"
+
+          # Shared counters for progress tracking (atomic via lock file)
+          echo "0" > /tmp/vid_done
+          echo "0" > /tmp/vid_errors
+          TOTAL_VIDEOS=$(find downloads -maxdepth 1 -type f | wc -l)
+          echo "$TOTAL_VIDEOS" > /tmp/vid_total
 
           process_video() {
             local video="$1"
             local filename
             filename=$(basename "$video")
 
-            # Skip non-video files (.ts, .txt, .html, etc.)
             case "${filename,,}" in
               *.mp4|*.mkv|*.avi|*.mov|*.wmv|*.flv|*.webm|*.m4v|*.mpg|*.mpeg) ;;
-              *) echo "  Skipping non-video file: $filename"; rm -f "$video"; return ;;
+              *) echo "  Skipping non-video: $filename"; rm -f "$video"; return ;;
             esac
-            echo "Processing: $filename"
 
-            # 1. Get source dimensions
+            local vid_start=$SECONDS
+
+            # 1. Probe source dimensions
             src_w=$(ffprobe -v error -select_streams v:0 \
               -show_entries stream=width  -of csv=p=0 "$video" 2>/dev/null)
             src_h=$(ffprobe -v error -select_streams v:0 \
               -show_entries stream=height -of csv=p=0 "$video" 2>/dev/null)
-            echo "  Source dimensions: ${src_w}x${src_h}"
 
-            # 2. Cropdetect over first 30 s — most frequent crop wins
+            if [ -z "$src_w" ] || [ -z "$src_h" ]; then
+              echo "::warning::Cannot probe $filename — skipping"
+              (
+                flock 9
+                echo $(($(cat /tmp/vid_errors) + 1)) > /tmp/vid_errors
+              ) 9>/tmp/vid_lock
+              rm -f "$video"
+              return
+            fi
+
+            echo "  ▶ $filename (${src_w}×${src_h})"
+
+            # 2. Cropdetect over first 30 s
             crop_info=$(ffmpeg -threads 2 -i "$video" -t 30 \
-              -vf cropdetect=24:16:0 -f null - 2>&1 \
+              -vf cropdetect=24:16:0 -f null /dev/null 2>&1 \
               | grep -oP 'crop=[0-9]+:[0-9]+:[0-9]+:[0-9]+' | sort | uniq -c | sort -rn | head -1 \
               | awk '{print $2}' || echo "")
 
-            # 3. Validate crop and build filter chain: [crop,] hqdn3d, unsharp
+            # 3. Validate crop
             CROP_PREFIX=""
             if [ -n "$crop_info" ]; then
               crop_w=$(echo "$crop_info" | cut -d= -f2 | cut -d: -f1)
               crop_h=$(echo "$crop_info" | cut -d= -f2 | cut -d: -f2)
               crop_x=$(echo "$crop_info" | cut -d= -f2 | cut -d: -f3)
               crop_y=$(echo "$crop_info" | cut -d= -f2 | cut -d: -f4)
-              # Accept only non-negative integers that fit inside the source frame
               if echo "$crop_w $crop_h $crop_x $crop_y" \
                    | grep -qP '^[0-9]+ [0-9]+ [0-9]+ [0-9]+$' && \
                  [ "$crop_w" -gt 0 ] && [ "$crop_h" -gt 0 ] && \
-                 { [ -z "$src_w" ] || [ "$((crop_x + crop_w))" -le "$src_w" ]; } && \
-                 { [ -z "$src_h" ] || [ "$((crop_y + crop_h))" -le "$src_h" ]; }; then
+                 [ "$((crop_x + crop_w))" -le "$src_w" ] && \
+                 [ "$((crop_y + crop_h))" -le "$src_h" ]; then
                 if [ "$crop_w" != "$src_w" ] || [ "$crop_h" != "$src_h" ] || \
                    [ "$crop_x" != "0" ]       || [ "$crop_y" != "0" ]; then
-                  echo "  Applying crop: ${crop_w}x${crop_h}+${crop_x}+${crop_y}"
                   CROP_PREFIX="${crop_info},"
-                else
-                  echo "  No black borders detected, skipping crop"
                 fi
-              else
-                echo "  WARNING: Invalid/out-of-bounds crop (${crop_info}), skipping crop"
               fi
             fi
 
             VF_ARGS="-vf ${CROP_PREFIX}${ENHANCE_FILTERS}"
 
-            # 4. Encode with libx264 — high quality, all assigned threads
-            local enc_log
-            enc_log=$(mktemp)
+            # 4. Encode
             # shellcheck disable=SC2086
-            # x264-params: key=value pairs separated by ":", commas within values
-            # (e.g. psy-rd=<rd>,<aq> and deblock=<alpha>,<beta>)
-            ffmpeg -y \
+            ffmpeg -y -nostdin \
               -threads "${THREADS_PER_JOB}" \
               -i "$video" \
               $VF_ARGS \
@@ -227,80 +355,141 @@ jobs:
               -x264-params "aq-mode=3:aq-strength=0.8:psy-rd=1.0,0.15:deblock=-1,-1:rc-lookahead=60:bframes=5:ref=5" \
               -c:a aac -b:a 256k -ar 48000 \
               -pix_fmt yuv420p -movflags +faststart \
-              "processed/${filename}" 2>"$enc_log" || {
-                echo "  ERROR: ffmpeg failed for $filename:"
-                cat "$enc_log"
-                # Last resort — copy original unchanged
+              "processed/${filename}" > /dev/null 2>&1 || {
+                echo "::warning::Encode failed for $filename — copying original"
                 cp "$video" "processed/${filename}"
+                (
+                  flock 9
+                  echo $(($(cat /tmp/vid_errors) + 1)) > /tmp/vid_errors
+                ) 9>/tmp/vid_lock
               }
-            rm -f "$enc_log"
 
             rm -f "$video"
-            echo "  Done: $filename. Disk: $(df -h . | tail -1 | awk '{print $4}') free"
+
+            local vid_elapsed=$((SECONDS - vid_start))
+            (
+              flock 9
+              done_count=$(($(cat /tmp/vid_done) + 1)); echo "$done_count" > /tmp/vid_done
+              total=$(cat /tmp/vid_total)
+              echo "  ✓ $filename (${vid_elapsed}s) [$done_count/$total]"
+            ) 9>/tmp/vid_lock
           }
 
           export -f process_video
           export THREADS_PER_JOB ENHANCE_FILTERS
 
-          # Process all videos in parallel — -print0/-0 handles spaces in filenames
+          echo "::group::Encoding $TOTAL_VIDEOS videos (${PARALLEL_JOBS} parallel workers)"
           find downloads -maxdepth 1 -type f -print0 | \
             xargs -0 -P "${PARALLEL_JOBS}" -I{} bash -c 'process_video "$@"' _ {}
+          echo "::endgroup::"
 
-          echo "Processed $(ls processed/ | wc -l) videos"
+          processed_count=$(ls processed/ 2>/dev/null | wc -l)
+          error_count=$(cat /tmp/vid_errors 2>/dev/null || echo 0)
+          ELAPSED=$((SECONDS - PHASE_START))
+
+          echo "::group::Processing summary"
+          echo "Processed : $processed_count videos"
+          echo "Errors    : $error_count"
+          echo "Time      : ${ELAPSED}s"
+          echo "::endgroup::"
+
+          processed_size=$(du -sh processed/ 2>/dev/null | awk '{print $1}')
+          processed_size=${processed_size:-0}
+          cat > "$GITHUB_STEP_SUMMARY" <<EOF
+          ## 🎬 Video Processing Dashboard
+
+          🟩🟩🟩🟩🟩⬜⬜ **5 / 7** — Encoding complete
+
+          | Phase | Status | Details |
+          |-------|--------|---------|
+          | 🔧 System Setup | ✅ Done | — |
+          | 📦 Dependencies | ✅ Done | — |
+          | 📁 Directories | ✅ Done | processed/ on tmpfs (50G) |
+          | ⬇️ Downloads | ✅ Done | — |
+          | 🎞️ Processing | ✅ Done | ${ELAPSED}s — ${processed_count} videos (${processed_size}), ${error_count} errors |
+          | 📦 Packaging | ⏳ Running | Creating zip files… |
+          | 🚀 Release | ⏳ Pending | — |
+          EOF
 
       - name: Create zip files with size limit
         run: |
+          PHASE_START=$SECONDS
+
           # GitHub release max file size is 2GB (2147483648 bytes).
-          # Use 1900MB as safety margin to account for zip metadata overhead.
           MAX_SIZE=$((1900 * 1024 * 1024))
           zip_index=1
           current_size=0
           current_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
 
+          echo "::group::Creating zip archives (max ~1.9 GB each)"
           for video in processed/*; do
             [ -f "$video" ] || continue
             file_size=$(stat -c%s "$video")
 
-            # If a single file exceeds MAX_SIZE, put it in its own zip (store only, no compression overhead)
             if [ "$file_size" -ge "$MAX_SIZE" ]; then
               if [ "$current_size" -gt 0 ]; then
                 zip_index=$((zip_index + 1))
               fi
               single_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
-              echo "Adding large file $(basename "$video") to $single_zip"
-              zip -j -0 "$single_zip" "$video"
+              echo "  Large file $(basename "$video") → $single_zip"
+              zip -j -0 "$single_zip" "$video" > /dev/null
               zip_index=$((zip_index + 1))
               current_size=0
               current_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
               continue
             fi
 
-            # If adding this file would exceed the limit, start a new zip
             if [ "$current_size" -gt 0 ] && [ $((current_size + file_size)) -ge "$MAX_SIZE" ]; then
               zip_index=$((zip_index + 1))
               current_size=0
               current_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
             fi
 
-            echo "Adding $(basename "$video") ($((file_size / 1024 / 1024))MB) to $current_zip"
-            zip -j -0 "$current_zip" "$video"
+            echo "  $(basename "$video") ($((file_size / 1024 / 1024))MB) → $current_zip"
+            zip -j -0 "$current_zip" "$video" > /dev/null
             current_size=$((current_size + file_size))
 
-            # Remove processed file to save disk space
             rm -f "$video"
           done
+          echo "::endgroup::"
 
-          echo "Created $(ls zips/*.zip 2>/dev/null | wc -l) zip file(s):"
+          zip_count=$(ls zips/*.zip 2>/dev/null | wc -l)
+          zip_size=$(du -sh zips/ 2>/dev/null | awk '{print $1}')
+          zip_size=${zip_size:-0}
+          ELAPSED=$((SECONDS - PHASE_START))
+
+          echo "::group::Zip summary"
+          echo "Created $zip_count zip file(s) in ${ELAPSED}s:"
           ls -lh zips/
+          echo "::endgroup::"
+
+          cat > "$GITHUB_STEP_SUMMARY" <<EOF
+          ## 🎬 Video Processing Dashboard
+
+          🟩🟩🟩🟩🟩🟩⬜ **6 / 7** — Zips created
+
+          | Phase | Status | Details |
+          |-------|--------|---------|
+          | 🔧 System Setup | ✅ Done | — |
+          | 📦 Dependencies | ✅ Done | — |
+          | 📁 Directories | ✅ Done | processed/ on tmpfs (50G) |
+          | ⬇️ Downloads | ✅ Done | — |
+          | 🎞️ Processing | ✅ Done | — |
+          | 📦 Packaging | ✅ Done | ${ELAPSED}s — ${zip_count} zips (${zip_size}) |
+          | 🚀 Release | ⏳ Running | Uploading… |
+          EOF
 
       - name: Create release and upload zips
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          PHASE_START=$SECONDS
+
           TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
           TAG="videos-${TIMESTAMP}"
           TITLE="Processed Videos - ${TIMESTAMP}"
-          BODY="Processed $(ls zips/*.zip 2>/dev/null | wc -l || echo 'unknown') zip parts — Ubuntu 24.04 · 64 cores · 256 GB RAM · 2040 GB SSD.
+          zip_count=$(ls zips/*.zip 2>/dev/null | wc -l)
+          BODY="Processed ${zip_count} zip parts — Ubuntu 24.04 · 64 cores · 256 GB RAM · 2040 GB SSD.
 
           System tuning
           - Swap: 8 GB swapfile
@@ -320,8 +509,29 @@ jobs:
           - Audio: AAC 256 kbps 48 kHz
           - ZIP parts: max ~1.9 GB each"
 
-          # Create the release
+          echo "::group::Create GitHub release ($TAG)"
           gh release create "$TAG" \
             --title "$TITLE" \
             --notes "$BODY" \
             zips/*.zip
+          echo "::endgroup::"
+
+          ELAPSED=$((SECONDS - PHASE_START))
+          cat > "$GITHUB_STEP_SUMMARY" <<EOF
+          ## 🎬 Video Processing Dashboard
+
+          🟩🟩🟩🟩🟩🟩🟩 **7 / 7** — Complete ✅
+
+          | Phase | Status | Details |
+          |-------|--------|---------|
+          | 🔧 System Setup | ✅ Done | — |
+          | 📦 Dependencies | ✅ Done | — |
+          | 📁 Directories | ✅ Done | processed/ on tmpfs (50G) |
+          | ⬇️ Downloads | ✅ Done | — |
+          | 🎞️ Processing | ✅ Done | — |
+          | 📦 Packaging | ✅ Done | ${zip_count} zip files |
+          | 🚀 Release | ✅ Done | ${ELAPSED}s — [\`${TAG}\`](../../releases/tag/${TAG}) |
+
+          ---
+          > ✅ **Pipeline complete** — All ${zip_count} zip parts uploaded to release \`${TAG}\`
+          EOF
