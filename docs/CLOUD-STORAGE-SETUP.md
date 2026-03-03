@@ -144,6 +144,8 @@ rclone tokens include a `refresh_token` and are refreshed automatically during u
 |-------|-----|
 | `RCLONE_DROPBOX_TOKEN secret is not set` | Add the secret in GitHub Settings (Step 4) |
 | `RCLONE_GDRIVE_TOKEN secret is not set` | Add the secret in GitHub Settings (Step 4) |
+| `invalid character 'y' looking for beginning of value` | The token secret is not a JSON object. Ensure you copied the raw JSON string (starting with `{`) from `rclone config show`, **not** a base64-encoded version. See Steps 2–4. |
+| `RCLONE_GDRIVE_TOKEN must be a JSON object` | Same as above — the secret value must start with `{`. Re-copy the JSON from `rclone config show gdrive | grep "^token"` and update the secret. |
 | `Failed to copy: …401 Unauthorized` | Token expired — re-authorize and update the secret |
 | `Failed to copy: …quota` | Google Drive storage quota exceeded |
 | Upload is slow | Reduce `--transfers` in the workflow (default: 8) |
