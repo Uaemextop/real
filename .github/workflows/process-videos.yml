@@ -30,30 +30,43 @@ jobs:
 
           echo "=== RAM tuning (256 GB) ==="
           # With 256 GB, swap should almost never be needed
-          sudo sysctl -w vm.swappiness=1
+          sudo sysctl -w vm.swappiness=1              || true
           # Buffer up to 40% of RAM as dirty pages before flush — huge write throughput
-          sudo sysctl -w vm.dirty_ratio=40
-          sudo sysctl -w vm.dirty_background_ratio=3
+          sudo sysctl -w vm.dirty_ratio=40             || true
+          sudo sysctl -w vm.dirty_background_ratio=3   || true
           # Retain inode/dentry cache aggressively (fast repeated file-metadata lookups)
-          sudo sysctl -w vm.vfs_cache_pressure=50
+          sudo sysctl -w vm.vfs_cache_pressure=50      || true
           # Allow memory over-commit (needed for 16 parallel ffmpeg allocations)
-          sudo sysctl -w vm.overcommit_memory=1
+          sudo sysctl -w vm.overcommit_memory=1        || true
 
           echo "=== Network tuning (64 concurrent downloads) ==="
-          sudo sysctl -w net.core.rmem_max=134217728
-          sudo sysctl -w net.core.wmem_max=134217728
-          sudo sysctl -w net.ipv4.tcp_rmem='4096 87380 134217728'
-          sudo sysctl -w net.ipv4.tcp_wmem='4096 65536 134217728'
-          sudo sysctl -w net.core.netdev_max_backlog=5000
-          sudo sysctl -w net.ipv4.tcp_window_scaling=1
-          sudo sysctl -w net.ipv4.tcp_tw_reuse=1
+          sudo sysctl -w net.core.rmem_max=134217728             || true
+          sudo sysctl -w net.core.wmem_max=134217728             || true
+          sudo sysctl -w net.ipv4.tcp_rmem='4096 87380 134217728' || true
+          sudo sysctl -w net.ipv4.tcp_wmem='4096 65536 134217728' || true
+          sudo sysctl -w net.core.netdev_max_backlog=5000        || true
+          sudo sysctl -w net.ipv4.tcp_window_scaling=1           || true
+          sudo sysctl -w net.ipv4.tcp_tw_reuse=1                 || true
 
           echo "=== Disable THP defrag (reduces latency spikes during encoding) ==="
-          echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/defrag > /dev/null
+          if [ -f /sys/kernel/mm/transparent_hugepage/defrag ]; then
+            echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/defrag > /dev/null 2>&1 \
+              && echo "THP defrag: $(cat /sys/kernel/mm/transparent_hugepage/defrag)" \
+              || echo "THP defrag: write failed (skipped)"
+          else
+            echo "THP defrag: not available (skipped)"
+          fi
 
           echo "=== I/O scheduler: none (NVMe SSD optimal) ==="
-          for sched in /sys/block/*/queue/scheduler; do
-            echo none | sudo tee "$sched" > /dev/null
+          for dev in /sys/block/*/queue/scheduler; do
+            blk=$(echo "$dev" | cut -d/ -f4)
+            # Skip virtual loop devices — only tune real disks
+            case "$blk" in loop*) continue ;; esac
+            if echo none | sudo tee "$dev" > /dev/null 2>&1; then
+              echo "  $blk: $(cat "$dev")"
+            else
+              echo "  $blk: scheduler unchanged ($(cat "$dev"))"
+            fi
           done
 
           echo "=== System summary ==="
@@ -79,10 +92,10 @@ jobs:
         run: |
           mkdir -p downloads processed zips
           # 256 GB RAM: mount processed/ as a RAM-disk.
-          # Peak usage = 16 parallel outputs × ~2 GB each ≈ 32 GB; 40 G gives headroom.
+          # Peak usage = 16 parallel outputs × ~2.5 GB each ≈ 40 GB; 50 G gives headroom.
           # Encode output writes at RAM speed, eliminating SSD write latency.
-          echo "Mounting processed/ on tmpfs (40G)..."
-          sudo mount -t tmpfs -o size=40G tmpfs processed/
+          echo "Mounting processed/ on tmpfs (50G)..."
+          sudo mount -t tmpfs -o size=50G tmpfs processed/
 
       - name: Download videos
         run: |
@@ -138,13 +151,14 @@ jobs:
           THREADS_PER_JOB=4
 
           # Filter chain applied to every video (order matters):
-          #   hqdn3d=4:3:6:4.5        — spatial + temporal noise reduction
-          #   unsharp=5:5:1.0:5:5:0.0  — luma sharpening
-          ENHANCE_FILTERS="hqdn3d=4:3:6:4.5,unsharp=5:5:1.0:5:5:0.0"
+          #   hqdn3d=3:2:5:3.5         — light spatial + moderate temporal noise reduction
+          #   cas=0.4                   — Contrast Adaptive Sharpen (artifact-free edge sharpening)
+          #   eq=contrast=1.03:…        — subtle contrast & saturation boost for vivid output
+          ENHANCE_FILTERS="hqdn3d=3:2:5:3.5,cas=0.4,eq=contrast=1.03:saturation=1.08"
 
-          echo "Encoder  : libx264 preset slow CRF 17"
+          echo "Encoder  : libx264 preset slow CRF 15 · profile high · tune film"
           echo "Workers  : ${PARALLEL_JOBS} jobs × ${THREADS_PER_JOB} threads = 64 vCPUs"
-          echo "Filters  : crop (auto) → hqdn3d (denoise) → unsharp (sharpen)"
+          echo "Filters  : crop (auto) → hqdn3d (denoise) → cas (sharpen) → eq (color)"
 
           process_video() {
             local video="$1"
@@ -202,13 +216,16 @@ jobs:
             local enc_log
             enc_log=$(mktemp)
             # shellcheck disable=SC2086
+            # x264-params: key=value pairs separated by ":", commas within values
+            # (e.g. psy-rd=<rd>,<aq> and deblock=<alpha>,<beta>)
             ffmpeg -y \
               -threads "${THREADS_PER_JOB}" \
-              -thread_queue_size 512 \
               -i "$video" \
               $VF_ARGS \
-              -c:v libx264 -preset slow -crf 17 \
-              -c:a aac -b:a 192k \
+              -c:v libx264 -preset slow -crf 15 \
+              -profile:v high -level:v 4.1 -tune film \
+              -x264-params "aq-mode=3:aq-strength=0.8:psy-rd=1.0,0.15:deblock=-1,-1:rc-lookahead=60:bframes=5:ref=5" \
+              -c:a aac -b:a 256k -ar 48000 \
               -pix_fmt yuv420p -movflags +faststart \
               "processed/${filename}" 2>"$enc_log" || {
                 echo "  ERROR: ffmpeg failed for $filename:"
@@ -288,17 +305,19 @@ jobs:
           System tuning
           - Swap: 8 GB swapfile
           - RAM: vm.swappiness=1, dirty_ratio=40, overcommit=1 (256 GB)
-          - processed/ on tmpfs RAM-disk (40 GB)
+          - processed/ on tmpfs RAM-disk (50 GB)
           - NVMe I/O scheduler: none
           - Network: 128 MB TCP buffers, 64 concurrent download streams
           - aria2c: disk-cache=1024M, file-allocation=falloc
 
           Video processing (16 workers × 4 threads = 64 vCPUs)
           - Black borders removed (cropdetect, 30 s sample)
-          - Noise reduction: hqdn3d (spatial + temporal)
-          - Sharpening: unsharp luma filter
-          - Encoder: libx264 preset slow CRF 17
-          - Audio: AAC 192 kbps
+          - Noise reduction: hqdn3d (light spatial + moderate temporal)
+          - Sharpening: CAS (Contrast Adaptive Sharpen)
+          - Color: subtle contrast & saturation boost (eq filter)
+          - Encoder: libx264 preset slow CRF 15 · profile high · tune film
+          - x264: aq-mode=3, psy-rd=1.0, deblock=-1
+          - Audio: AAC 256 kbps 48 kHz
           - ZIP parts: max ~1.9 GB each"
 
           # Create the release
