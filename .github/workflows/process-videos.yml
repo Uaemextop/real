@@ -207,6 +207,7 @@ jobs:
         run: |
           echo "::group::Create directories and mount tmpfs"
           mkdir -p downloads processed zips
+          # tmpfs only uses RAM for data stored; downloads are deleted after encoding
           echo "Mounting downloads/ on tmpfs (100G)..."
           sudo mount -t tmpfs -o size=100G,noatime tmpfs downloads/
           echo "Mounting processed/ on tmpfs (100G)..."
