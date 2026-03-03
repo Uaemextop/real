@@ -8,42 +8,12 @@ permissions:
 
 jobs:
   process-videos:
-    runs-on: mp4  # GitHub Enterprise self-hosted runner with GPU
+    runs-on: mp4  # GitHub Enterprise self-hosted runner with 64 vCPUs
     timeout-minutes: 360
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Install NVIDIA drivers and CUDA toolkit
-        run: |
-          echo "=== Checking for existing NVIDIA GPU hardware ==="
-          lspci | grep -i nvidia || echo "No NVIDIA PCI devices listed (may need driver)"
-
-          # Install NVIDIA driver and CUDA toolkit if not already present
-          if ! command -v nvidia-smi &>/dev/null; then
-            echo "nvidia-smi not found — installing NVIDIA drivers and CUDA toolkit..."
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq ubuntu-drivers-common nvidia-cuda-toolkit
-            # Auto-detect and install the recommended driver for the GPU
-            RECOMMENDED=$(ubuntu-drivers devices 2>/dev/null | grep -oP 'nvidia-driver-\d+' | sort -t- -k3 -n | tail -1)
-            if [ -n "$RECOMMENDED" ]; then
-              echo "Installing recommended driver: $RECOMMENDED"
-              sudo apt-get install -y -qq "$RECOMMENDED"
-            else
-              echo "No recommended driver found, installing nvidia-driver-535 as default"
-              sudo apt-get install -y -qq nvidia-driver-535
-            fi
-            # Reload the NVIDIA kernel module
-            sudo modprobe nvidia || true
-          fi
-
-          # Ensure CUDA paths are available
-          export PATH="/usr/local/cuda/bin:$PATH"
-          export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
-
-          echo "=== GPU status ==="
-          nvidia-smi || echo "WARNING: nvidia-smi failed — GPU may not be available"
 
       - name: Install dependencies
         run: |
@@ -109,42 +79,23 @@ jobs:
 
           echo "Downloaded $(ls downloads/ | wc -l) videos"
 
-      - name: Process videos - remove black borders and re-encode with GPU
+      - name: Process videos - remove black borders and re-encode with CPU (64 vCPUs)
         run: |
-          # Ensure CUDA paths are available
-          export PATH="/usr/local/cuda/bin:$PATH"
-          export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
+          # Use 64 vCPUs: run 8 parallel ffmpeg jobs, each with 8 threads
+          PARALLEL_JOBS=8
+          THREADS_PER_JOB=8
 
-          # Detect GPU and choose encoder
-          ENCODER="libx264"
-          HWACCEL_FLAGS=""
-          if command -v nvidia-smi &>/dev/null; then
-            GPU_NAME=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1)
-            if [ -n "$GPU_NAME" ]; then
-              echo "GPU detected: $GPU_NAME"
-              # Test if h264_nvenc is available in ffmpeg
-              if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q h264_nvenc; then
-                ENCODER="h264_nvenc"
-                HWACCEL_FLAGS="-hwaccel cuda -hwaccel_output_format cuda"
-                echo "Using GPU-accelerated encoder: h264_nvenc"
-              else
-                echo "h264_nvenc not available, falling back to libx264"
-              fi
-            fi
-          fi
+          echo "Using CPU encoder: libx264 (${PARALLEL_JOBS} parallel jobs × ${THREADS_PER_JOB} threads = 64 vCPUs)"
 
-          if [ "$ENCODER" = "libx264" ]; then
-            echo "Using CPU encoder: libx264"
-          fi
-
-          for video in downloads/*; do
-            [ -f "$video" ] || continue
+          process_video() {
+            local video="$1"
+            local filename
             filename=$(basename "$video")
 
             # Skip non-video files (e.g. .ts config files, .txt, .html)
             case "${filename,,}" in
               *.mp4|*.mkv|*.avi|*.mov|*.wmv|*.flv|*.webm|*.m4v|*.mpg|*.mpeg) ;;
-              *) echo "  Skipping non-video file: $filename"; rm -f "$video"; continue ;;
+              *) echo "  Skipping non-video file: $filename"; rm -f "$video"; return ;;
             esac
             echo "Processing: $filename"
 
@@ -157,7 +108,7 @@ jobs:
             echo "  Source dimensions: ${src_w}x${src_h}"
 
             # 2. Run cropdetect and pick the most frequent crop (mode)
-            crop_info=$(ffmpeg -i "$video" -t 10 -vf cropdetect=24:16:0 -f null - 2>&1 \
+            crop_info=$(ffmpeg -threads 2 -i "$video" -t 10 -vf cropdetect=24:16:0 -f null - 2>&1 \
               | grep -oP 'crop=\S+' | sort | uniq -c | sort -rn | head -1 \
               | awk '{print $2}' || echo "")
 
@@ -192,52 +143,33 @@ jobs:
               fi
             fi
 
-            # Encode with chosen encoder
-            # Note: hwaccel cuda is only used when no crop filter is needed,
-            # because crop operates on CPU frames. h264_nvenc encoding still
-            # uses the GPU regardless of the decoding path.
-            if [ "$ENCODER" = "h264_nvenc" ]; then
-              if [ -z "$VF_ARGS" ]; then
-                ACCEL_FLAGS="$HWACCEL_FLAGS"
-              else
-                ACCEL_FLAGS=""
-              fi
-              # shellcheck disable=SC2086
-              ffmpeg -y $ACCEL_FLAGS -i "$video" \
-                $VF_ARGS \
-                -c:v h264_nvenc -preset p4 -cq 18 -b:v 0 \
-                -c:a aac -b:a 192k \
-                -pix_fmt yuv420p -movflags +faststart \
-                "processed/${filename}" 2>/dev/null || {
-                  echo "  WARNING: NVENC failed, retrying with libx264"
-                  # shellcheck disable=SC2086
-                  ffmpeg -y -i "$video" \
-                    $VF_ARGS \
-                    -c:v libx264 -preset fast -crf 18 \
-                    -c:a aac -b:a 192k \
-                    -pix_fmt yuv420p -movflags +faststart \
-                    "processed/${filename}" 2>/dev/null
-                }
-            else
-              # shellcheck disable=SC2086
-              ffmpeg -y -i "$video" \
-                $VF_ARGS \
-                -c:v libx264 -preset fast -crf 18 \
-                -c:a aac -b:a 192k \
-                -pix_fmt yuv420p -movflags +faststart \
-                "processed/${filename}" 2>/dev/null
-            fi
+            # Encode with libx264 using high-quality settings and all assigned threads
+            # shellcheck disable=SC2086
+            ffmpeg -y -threads "${THREADS_PER_JOB}" -i "$video" \
+              $VF_ARGS \
+              -c:v libx264 -preset slow -crf 17 \
+              -c:a aac -b:a 192k \
+              -pix_fmt yuv420p -movflags +faststart \
+              "processed/${filename}" 2>/dev/null
 
             # Fallback: if encoding failed, copy original
             if [ ! -f "processed/${filename}" ]; then
-              echo "  ERROR: All processing failed for $filename, copying original"
+              echo "  ERROR: Encoding failed for $filename, copying original"
               cp "$video" "processed/${filename}"
             fi
 
             # Remove original to save disk space
             rm -f "$video"
-            echo "  Done. Disk: $(df -h . | tail -1 | awk '{print $4}') free"
-          done
+            echo "  Done: $filename. Disk: $(df -h . | tail -1 | awk '{print $4}') free"
+          }
+
+          export -f process_video
+          export THREADS_PER_JOB
+
+          # Process all videos in parallel (up to PARALLEL_JOBS at once)
+          find downloads -maxdepth 1 -type f | \
+            xargs -P "${PARALLEL_JOBS}" -I{} bash -c 'process_video "$@"' _ {}
+
           echo "Processed $(ls processed/ | wc -l) videos"
 
       - name: Create zip files with size limit
@@ -292,10 +224,11 @@ jobs:
           TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
           TAG="videos-${TIMESTAMP}"
           TITLE="Processed Videos - ${TIMESTAMP}"
-          BODY="Processed videos with black borders removed and re-encoded using GPU-accelerated ffmpeg.
+          BODY="Processed videos with black borders removed and re-encoded using CPU-optimized ffmpeg (64 vCPUs).
 
           - Black borders auto-detected and cropped using ffmpeg cropdetect
-          - Re-encoded with h264_nvenc (GPU) or libx264 (CPU fallback)
+          - Re-encoded with libx264 (preset slow, CRF 17) for high quality
+          - 8 videos processed in parallel, each using 8 threads (64 vCPUs total)
           - Videos split into zip parts (max ~1.9GB each)
 
           Total zip files: $(ls zips/*.zip 2>/dev/null | wc -l)"
