@@ -269,24 +269,24 @@ jobs:
           # Calculate aria2c parameters based on measured bandwidth
           DL_MBS=$((DL_SPEED / 8))  # Convert Mbit/s to MB/s
 
-          # max-concurrent-downloads: ~1 per 10 MB/s, min 4, max 32
+          # max-concurrent-downloads: ~1 per 10 MB/s, min 4, max 24
           CONCURRENT=$((DL_MBS / 10))
           [ "$CONCURRENT" -lt 4 ] && CONCURRENT=4
-          [ "$CONCURRENT" -gt 32 ] && CONCURRENT=32
+          [ "$CONCURRENT" -gt 24 ] && CONCURRENT=24
 
-          # max-connection-per-server: ~1 per 20 MB/s, min 4, max 16
+          # max-connection-per-server: ~1 per 20 MB/s, min 4, max 8
           CONNS=$((DL_MBS / 20))
           [ "$CONNS" -lt 4 ] && CONNS=4
-          [ "$CONNS" -gt 16 ] && CONNS=16
+          [ "$CONNS" -gt 8 ] && CONNS=8
 
           SPLIT=$CONNS
 
-          # lowest-speed-limit: 1% of expected per-connection throughput, min 50K, max 500K
+          # lowest-speed-limit: 1% of expected per-connection throughput, min 20K, max 200K
           # Per-connection KB/s = total_KB/s / concurrent / conns_per_server
           PER_CONN_KBS=$((DL_MBS * 1024 / CONCURRENT / CONNS))
           LOWEST=$((PER_CONN_KBS / 100))
-          [ "$LOWEST" -lt 50 ] && LOWEST=50
-          [ "$LOWEST" -gt 500 ] && LOWEST=500
+          [ "$LOWEST" -lt 20 ] && LOWEST=20
+          [ "$LOWEST" -gt 200 ] && LOWEST=200
 
           echo "Bandwidth: ${DL_SPEED} Mbit/s (${DL_MBS} MB/s)"
           echo "Calculated: concurrent=${CONCURRENT}, conns/server=${CONNS}, split=${SPLIT}, lowest-speed=${LOWEST}K"
@@ -301,10 +301,10 @@ jobs:
             --split=${SPLIT} \
             --min-split-size=1M \
             --disk-cache=1024M \
-            --file-allocation=falloc \
-            --max-tries=10 \
-            --retry-wait=3 \
-            --max-file-not-found=5 \
+            --file-allocation=none \
+            --max-tries=50 \
+            --retry-wait=5 \
+            --max-file-not-found=10 \
             --connect-timeout=15 \
             --timeout=300 \
             --lowest-speed-limit=${LOWEST}K \
@@ -315,7 +315,7 @@ jobs:
             --summary-interval=15 \
             --auto-file-renaming=false \
             --allow-overwrite=true \
-            --max-resume-failure-tries=5 \
+            --max-resume-failure-tries=10 \
             --always-resume=true 2>&1 || echo "::warning::Some downloads may have failed"
           echo "::endgroup::"
 
