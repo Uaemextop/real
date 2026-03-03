@@ -95,6 +95,42 @@ jobs:
           done
           echo "::endgroup::"
 
+          echo "::group::CPU performance governor"
+          if [ -d /sys/devices/system/cpu/cpu0/cpufreq ]; then
+            for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+              echo performance | sudo tee "$gov" > /dev/null 2>&1
+            done
+            echo "CPU governor: performance"
+          else
+            echo "CPU governor: not available (skipped)"
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Kernel scheduler tuning (throughput)"
+          # EEVDF (kernel 6.6+): disable autogroup, max util clamp
+          sudo sysctl -w kernel.sched_autogroup_enabled=0             > /dev/null 2>&1 || true
+          sudo sysctl -w kernel.sched_util_clamp_min=1024             > /dev/null 2>&1 || true
+          # CFS (kernel < 6.6): silently skipped on EEVDF
+          sudo sysctl -w kernel.sched_min_granularity_ns=10000000    > /dev/null 2>&1 || true
+          sudo sysctl -w kernel.sched_wakeup_granularity_ns=15000000 > /dev/null 2>&1 || true
+          sudo sysctl -w kernel.sched_migration_cost_ns=5000000      > /dev/null 2>&1 || true
+          echo "Scheduler: autogroup off, util_clamp_min max, CFS fallbacks"
+          echo "::endgroup::"
+
+          echo "::group::File descriptor limits"
+          ulimit -n 65536 2>/dev/null || true
+          ulimit -u 65536 2>/dev/null || true
+          echo "ulimit -n=$(ulimit -n), ulimit -u=$(ulimit -u)"
+          echo "::endgroup::"
+
+          echo "::group::Block device readahead"
+          for dev in /sys/block/*/queue/read_ahead_kb; do
+            blk=$(echo "$dev" | cut -d/ -f4)
+            case "$blk" in loop*) continue ;; esac
+            echo 2048 | sudo tee "$dev" > /dev/null 2>&1 && echo "  $blk → 2048 KB" || true
+          done
+          echo "::endgroup::"
+
           echo "::group::System summary"
           echo "CPUs : $(nproc)"
           echo "RAM  :"; free -h
@@ -171,9 +207,11 @@ jobs:
         run: |
           echo "::group::Create directories and mount tmpfs"
           mkdir -p downloads processed zips
-          echo "Mounting processed/ on tmpfs (50G)..."
-          sudo mount -t tmpfs -o size=50G tmpfs processed/
-          echo "Directories ready: downloads/, processed/ (tmpfs 50G), zips/"
+          echo "Mounting downloads/ on tmpfs (100G)..."
+          sudo mount -t tmpfs -o size=100G,noatime tmpfs downloads/
+          echo "Mounting processed/ on tmpfs (100G)..."
+          sudo mount -t tmpfs -o size=100G,noatime tmpfs processed/
+          echo "Directories ready: downloads/ (tmpfs 100G), processed/ (tmpfs 100G), zips/"
           echo "::endgroup::"
 
           echo "::group::Update dashboard"
@@ -186,7 +224,7 @@ jobs:
           |-------|--------|---------|
           | 🔧 System Setup | ✅ Done | — |
           | 📦 Dependencies | ✅ Done | — |
-          | 📁 Directories | ✅ Done | processed/ on tmpfs (50G) |
+          | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ⏳ Running | Preparing… |
           | 🎞️ Processing | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Pending | — |
@@ -272,7 +310,7 @@ jobs:
           |-------|--------|---------|
           | 🔧 System Setup | ✅ Done | — |
           | 📦 Dependencies | ✅ Done | — |
-          | 📁 Directories | ✅ Done | processed/ on tmpfs (50G) |
+          | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | ${ELAPSED}s — ${valid} files (${total_size}), ${invalid} invalid |
           | 🎞️ Processing | ⏳ Running | 0/${valid} videos… |
           | 📦 Packaging | ⏳ Pending | — |
@@ -292,8 +330,10 @@ jobs:
 
           echo "::group::Encoder configuration"
           echo "Encoder  : libx264 preset slow CRF 15 · profile high · tune film"
+          echo "Decode   : hardware-accelerated (hwaccel auto)"
           echo "Workers  : ${PARALLEL_JOBS} jobs × ${THREADS_PER_JOB} threads = 64 vCPUs"
-          echo "Filters  : crop (auto) → hqdn3d (denoise) → cas (sharpen) → eq (color)"
+          echo "Filters  : crop (auto 10s) → hqdn3d (denoise) → cas (sharpen) → eq (color)"
+          echo "I/O      : full tmpfs (downloads + processed in RAM)"
           echo "::endgroup::"
 
           # Shared counters for progress tracking (atomic via lock file)
@@ -315,9 +355,9 @@ jobs:
             local vid_start=$SECONDS
 
             # 1. Probe source dimensions
-            src_w=$(ffprobe -v error -select_streams v:0 \
+            src_w=$(ffprobe -v error -analyzeduration 5M -probesize 5M -select_streams v:0 \
               -show_entries stream=width  -of csv=p=0 "$video" 2>/dev/null)
-            src_h=$(ffprobe -v error -select_streams v:0 \
+            src_h=$(ffprobe -v error -analyzeduration 5M -probesize 5M -select_streams v:0 \
               -show_entries stream=height -of csv=p=0 "$video" 2>/dev/null)
 
             if [ -z "$src_w" ] || [ -z "$src_h" ]; then
@@ -332,8 +372,8 @@ jobs:
 
             echo "  ▶ $filename (${src_w}×${src_h})"
 
-            # 2. Cropdetect over first 30 s
-            crop_info=$(ffmpeg -threads 2 -i "$video" -t 30 \
+            # 2. Cropdetect over first 10 s
+            crop_info=$(ffmpeg -hwaccel auto -threads 2 -i "$video" -t 10 -an \
               -vf cropdetect=24:16:0 -f null /dev/null 2>&1 \
               | grep -oP 'crop=[0-9]+:[0-9]+:[0-9]+:[0-9]+' | sort | uniq -c | sort -rn | head -1 \
               | awk '{print $2}' || echo "")
@@ -362,6 +402,7 @@ jobs:
             # 4. Encode
             # shellcheck disable=SC2086
             ffmpeg -y -nostdin \
+              -hwaccel auto \
               -threads "${THREADS_PER_JOB}" \
               -i "$video" \
               $VF_ARGS \
@@ -394,7 +435,7 @@ jobs:
           export THREADS_PER_JOB ENHANCE_FILTERS
 
           echo "::group::Encoding $TOTAL_VIDEOS videos (${PARALLEL_JOBS} parallel workers)"
-          find downloads -maxdepth 1 -type f -print0 | \
+          find downloads -maxdepth 1 -type f -printf '%s %p\0' | sort -zrn | sed -z 's/^[0-9]* //' | \
             xargs -0 -P "${PARALLEL_JOBS}" -I{} bash -c 'process_video "$@"' _ {}
           echo "::endgroup::"
 
@@ -420,7 +461,7 @@ jobs:
           |-------|--------|---------|
           | 🔧 System Setup | ✅ Done | — |
           | 📦 Dependencies | ✅ Done | — |
-          | 📁 Directories | ✅ Done | processed/ on tmpfs (50G) |
+          | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | — |
           | 🎞️ Processing | ✅ Done | ${ELAPSED}s — ${processed_count} videos (${processed_size}), ${error_count} errors |
           | 📦 Packaging | ⏳ Running | Creating zip files… |
@@ -491,7 +532,7 @@ jobs:
           |-------|--------|---------|
           | 🔧 System Setup | ✅ Done | — |
           | 📦 Dependencies | ✅ Done | — |
-          | 📁 Directories | ✅ Done | processed/ on tmpfs (50G) |
+          | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | — |
           | 🎞️ Processing | ✅ Done | — |
           | 📦 Packaging | ✅ Done | ${ELAPSED}s — ${zip_count} zips (${zip_size}) |
@@ -515,13 +556,16 @@ jobs:
           System tuning
           - Swap: 8 GB swapfile
           - RAM: vm.swappiness=1, dirty_ratio=40, overcommit=1 (256 GB)
-          - processed/ on tmpfs RAM-disk (50 GB)
+          - downloads/ + processed/ on tmpfs RAM-disk (100 GB each)
           - NVMe I/O scheduler: none
+          - CPU governor: performance
+          - Kernel scheduler: throughput-optimized
           - Network: 128 MB TCP buffers, 64 concurrent download streams
           - aria2c: disk-cache=1024M, file-allocation=falloc
 
           Video processing (16 workers × 4 threads = 64 vCPUs)
-          - Black borders removed (cropdetect, 30 s sample)
+          - Hardware-accelerated decoding (hwaccel auto)
+          - Black borders removed (cropdetect, 10 s sample)
           - Noise reduction: hqdn3d (light spatial + moderate temporal)
           - Sharpening: CAS (Contrast Adaptive Sharpen)
           - Color: subtle contrast & saturation boost (eq filter)
@@ -548,7 +592,7 @@ jobs:
           |-------|--------|---------|
           | 🔧 System Setup | ✅ Done | — |
           | 📦 Dependencies | ✅ Done | — |
-          | 📁 Directories | ✅ Done | processed/ on tmpfs (50G) |
+          | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | — |
           | 🎞️ Processing | ✅ Done | — |
           | 📦 Packaging | ✅ Done | ${zip_count} zip files |
