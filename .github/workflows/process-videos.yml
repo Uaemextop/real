@@ -377,39 +377,71 @@ jobs:
           PHASE_START=$SECONDS
 
           # GitHub release hard limit is 2 GiB (2147483648 bytes) per file.
-          # zip -s splits the archive so NO single part can exceed the split size,
-          # even when an individual video file is larger than 1900 MiB.
+          # MAX_SIZE controls how many files are accumulated per zip.
           MAX_SIZE=$((1900 * 1024 * 1024))
+          GITHUB_LIMIT=2147483648
+          zip_index=1
+          current_size=0
+          current_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
 
-          echo "::group::Creating split zip archive (max 1900m per part)"
-          video_count=$(find processed/ -maxdepth 1 -type f 2>/dev/null | wc -l)
-          if [ "$video_count" -gt 0 ]; then
-            zip -s 1900m -j -0 zips/videos_part processed/*
-            rm -rf processed/*
-          else
-            echo "No processed videos found"
-          fi
+          echo "::group::Creating zip archives (max ~1.9 GB each)"
+          for video in processed/*; do
+            [ -f "$video" ] || continue
+            file_size=$(stat -c%s "$video")
+
+            # Reject files that can never be uploaded to GitHub releases.
+            if [ "$file_size" -ge "$GITHUB_LIMIT" ]; then
+              echo "  ❌ ERROR: $(basename "$video") is ${file_size} bytes — exceeds GitHub's 2 GiB upload limit" >&2
+              exit 1
+            fi
+
+            if [ "$file_size" -ge "$MAX_SIZE" ]; then
+              if [ "$current_size" -gt 0 ]; then
+                zip_index=$((zip_index + 1))
+              fi
+              single_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
+              echo "  Large file $(basename "$video") → $single_zip"
+              zip -j -0 "$single_zip" "$video" > /dev/null
+              zip_index=$((zip_index + 1))
+              current_size=0
+              current_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
+              rm -f "$video"
+              continue
+            fi
+
+            if [ "$current_size" -gt 0 ] && [ $((current_size + file_size)) -ge "$MAX_SIZE" ]; then
+              zip_index=$((zip_index + 1))
+              current_size=0
+              current_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
+            fi
+
+            echo "  $(basename "$video") ($((file_size / 1024 / 1024))MB) → $current_zip"
+            zip -j -0 "$current_zip" "$video" > /dev/null
+            current_size=$((current_size + file_size))
+
+            rm -f "$video"
+          done
           echo "::endgroup::"
 
-          echo "::group::Validating zip sizes (max 1.9 GB each)"
+          echo "::group::Validating zip sizes (limit: GitHub 2 GiB per file)"
           oversize_found=0
-          for z in zips/videos_part.z*; do
+          for z in zips/*.zip; do
             [ -f "$z" ] || continue
             z_bytes=$(stat -c%s "$z")
-            if [ "$z_bytes" -gt "$MAX_SIZE" ]; then
-              echo "  ❌ $(basename "$z") is ${z_bytes} bytes — exceeds MAX_SIZE ${MAX_SIZE} bytes"
+            if [ "$z_bytes" -ge "$GITHUB_LIMIT" ]; then
+              echo "  ❌ $(basename "$z") is ${z_bytes} bytes — exceeds GitHub's 2 GiB upload limit"
               oversize_found=1
             else
               echo "  ✅ $(basename "$z") is ${z_bytes} bytes — OK"
             fi
           done
           if [ "$oversize_found" -eq 1 ]; then
-            echo "ERROR: One or more zip files exceed the 1.9 GB limit." >&2
+            echo "ERROR: One or more zip files exceed GitHub's 2 GiB upload limit." >&2
             exit 1
           fi
           echo "::endgroup::"
 
-          zip_count=$(ls zips/videos_part.z* 2>/dev/null | wc -l)
+          zip_count=$(ls zips/*.zip 2>/dev/null | wc -l)
           zip_size=$(du -sh zips/ 2>/dev/null | awk '{print $1}')
           zip_size=${zip_size:-0}
           ELAPSED=$((SECONDS - PHASE_START))
@@ -446,7 +478,7 @@ jobs:
           TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
           TAG="videos-${TIMESTAMP}"
           TITLE="Processed Videos - ${TIMESTAMP}"
-          zip_count=$(ls zips/videos_part.z* 2>/dev/null | wc -l)
+          zip_count=$(ls zips/*.zip 2>/dev/null | wc -l)
           BODY="Processed ${zip_count} zip parts — Enterprise runner: Ubuntu 24.04 · 64 cores · 256 GB RAM.
 
           Downloads
@@ -468,7 +500,7 @@ jobs:
           gh release create "$TAG" \
             --title "$TITLE" \
             --notes "$BODY" \
-            zips/videos_part.z*
+            zips/*.zip
           echo "::endgroup::"
 
           ELAPSED=$((SECONDS - PHASE_START))
