@@ -392,8 +392,8 @@ jobs:
                 zip_index=$((zip_index + 1))
               fi
               single_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
-              echo "  Large file $(basename "$video") → $single_zip"
-              zip -j -0 "$single_zip" "$video" > /dev/null
+              echo "  Large file $(basename "$video") → $single_zip (split at 1900m)"
+              zip -j -0 -s 1900m "$single_zip" "$video" > /dev/null
               zip_index=$((zip_index + 1))
               current_size=0
               current_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
@@ -414,7 +414,7 @@ jobs:
           done
           echo "::endgroup::"
 
-          zip_count=$(ls zips/*.zip 2>/dev/null | wc -l)
+          zip_count=$(ls zips/ 2>/dev/null | wc -l)
           zip_size=$(du -sh zips/ 2>/dev/null | awk '{print $1}')
           zip_size=${zip_size:-0}
           ELAPSED=$((SECONDS - PHASE_START))
@@ -451,7 +451,7 @@ jobs:
           TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
           TAG="videos-${TIMESTAMP}"
           TITLE="Processed Videos - ${TIMESTAMP}"
-          zip_count=$(ls zips/*.zip 2>/dev/null | wc -l)
+          zip_count=$(ls zips/ 2>/dev/null | wc -l)
           BODY="Processed ${zip_count} zip parts — Enterprise runner: Ubuntu 24.04 · 64 cores · 256 GB RAM.
 
           Downloads
@@ -473,7 +473,7 @@ jobs:
           gh release create "$TAG" \
             --title "$TITLE" \
             --notes "$BODY" \
-            zips/*.zip
+            zips/*
           echo "::endgroup::"
 
           ELAPSED=$((SECONDS - PHASE_START))
