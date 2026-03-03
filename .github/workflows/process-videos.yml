@@ -24,7 +24,7 @@ jobs:
           cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null \
             || echo "(cpufreq not available on this runner)"
           # Keep ffmpeg worker threads on the same cores — reduces cache-miss migrations
-          sudo sysctl -w kernel.sched_migration_cost_ns=5000000
+          sudo sysctl -w kernel.sched_migration_cost_ns=5000000 || true
 
           echo "=== RAM tuning (256 GB) ==="
           # With 256 GB, swap should almost never be needed
