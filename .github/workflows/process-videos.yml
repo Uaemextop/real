@@ -20,6 +20,8 @@ jobs:
         run: |
           echo "## 🎬 Video Processing Dashboard" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "⬜⬜⬜⬜⬜⬜⬜ **0 / 7** — Starting…" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Phase | Status | Details |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|--------|---------|" >> "$GITHUB_STEP_SUMMARY"
           echo "| 🔧 System Setup | ⏳ Running | Configuring system… |" >> "$GITHUB_STEP_SUMMARY"
@@ -101,6 +103,8 @@ jobs:
           cat > /tmp/dashboard_setup.md <<EOF
           ## 🎬 Video Processing Dashboard
 
+          🟩⬜⬜⬜⬜⬜⬜ **1 / 7** — System configured
+
           | Phase | Status | Details |
           |-------|--------|---------|
           | 🔧 System Setup | ✅ Done | ${ELAPSED}s — ${CPU_COUNT} CPUs, ${RAM_TOTAL} RAM |
@@ -141,6 +145,8 @@ jobs:
           cat > "$GITHUB_STEP_SUMMARY" <<EOF
           ## 🎬 Video Processing Dashboard
 
+          🟩🟩⬜⬜⬜⬜⬜ **2 / 7** — Dependencies installed
+
           | Phase | Status | Details |
           |-------|--------|---------|
           | 🔧 System Setup | ✅ Done | — |
@@ -163,6 +169,8 @@ jobs:
 
           cat > "$GITHUB_STEP_SUMMARY" <<EOF
           ## 🎬 Video Processing Dashboard
+
+          🟩🟩🟩⬜⬜⬜⬜ **3 / 7** — Directories ready
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -241,9 +249,11 @@ jobs:
 
           ELAPSED=$((SECONDS - PHASE_START))
           total_size=$(du -sh downloads/ 2>/dev/null | awk '{print $1}')
-          total_size=${total_size:-0B}
+          total_size=${total_size:-0}
           cat > "$GITHUB_STEP_SUMMARY" <<EOF
           ## 🎬 Video Processing Dashboard
+
+          🟩🟩🟩🟩⬜⬜⬜ **4 / 7** — Downloads complete
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -384,9 +394,11 @@ jobs:
           echo "::endgroup::"
 
           processed_size=$(du -sh processed/ 2>/dev/null | awk '{print $1}')
-          processed_size=${processed_size:-0B}
+          processed_size=${processed_size:-0}
           cat > "$GITHUB_STEP_SUMMARY" <<EOF
           ## 🎬 Video Processing Dashboard
+
+          🟩🟩🟩🟩🟩⬜⬜ **5 / 7** — Encoding complete
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -443,7 +455,7 @@ jobs:
 
           zip_count=$(ls zips/*.zip 2>/dev/null | wc -l)
           zip_size=$(du -sh zips/ 2>/dev/null | awk '{print $1}')
-          zip_size=${zip_size:-0B}
+          zip_size=${zip_size:-0}
           ELAPSED=$((SECONDS - PHASE_START))
 
           echo "::group::Zip summary"
@@ -453,6 +465,8 @@ jobs:
 
           cat > "$GITHUB_STEP_SUMMARY" <<EOF
           ## 🎬 Video Processing Dashboard
+
+          🟩🟩🟩🟩🟩🟩⬜ **6 / 7** — Zips created
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -505,6 +519,8 @@ jobs:
           ELAPSED=$((SECONDS - PHASE_START))
           cat > "$GITHUB_STEP_SUMMARY" <<EOF
           ## 🎬 Video Processing Dashboard
+
+          🟩🟩🟩🟩🟩🟩🟩 **7 / 7** — Complete ✅
 
           | Phase | Status | Details |
           |-------|--------|---------|
