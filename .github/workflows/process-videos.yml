@@ -634,14 +634,6 @@ jobs:
             zips/*.zip
           echo "::endgroup::"
 
-          echo "::group::Generate downloads.txt"
-          REPO="${{ github.repository }}"
-          for zip_file in zips/*.zip; do
-            echo "https://github.com/${REPO}/releases/download/${TAG}/$(basename "$zip_file")"
-          done > downloads.txt
-          gh release upload "$TAG" downloads.txt --clobber
-          echo "::endgroup::"
-
           ELAPSED=$((SECONDS - PHASE_START))
           echo "::group::Update dashboard"
           CLOUD_STATUS=$(cat /tmp/cloud_status.txt 2>/dev/null || echo "⏭️ Skipped | —")
