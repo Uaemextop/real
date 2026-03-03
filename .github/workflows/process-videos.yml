@@ -518,10 +518,30 @@ jobs:
             [ -f "$video" ] || continue
             file_size=$(stat -c%s "$video")
 
-            # Reject files that can never be uploaded to GitHub releases.
+            # Files that exceed the GitHub limit are split into MAX_SIZE chunks.
             if [ "$file_size" -ge "$GITHUB_LIMIT" ]; then
-              echo "  ❌ ERROR: $(basename "$video") is ${file_size} bytes — exceeds GitHub's 2 GiB upload limit" >&2
-              exit 1
+              echo "  ⚡ Splitting $(basename "$video") ($((file_size / 1024 / 1024))MB) into ~1.9 GB parts..."
+              # Close the current accumulation zip before starting split parts.
+              if [ "$current_size" -gt 0 ]; then
+                zip_index=$((zip_index + 1))
+                current_size=0
+                current_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
+              fi
+              split -b "$MAX_SIZE" "$video" "${video}.part." \
+                || { echo "  ❌ ERROR: split failed for $(basename "$video")" >&2; exit 1; }
+              for part in "${video}".part.*; do
+                part_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
+                part_size=$(stat -c%s "$part")
+                echo "    $(basename "$part") ($((part_size / 1024 / 1024))MB) → $part_zip"
+                zip -j -0 "$part_zip" "$part" > /dev/null
+                rm -f "$part"
+                zip_index=$((zip_index + 1))
+              done
+              # Reset accumulation state for subsequent files.
+              current_size=0
+              current_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
+              rm -f "$video"
+              continue
             fi
 
             if [ "$file_size" -ge "$MAX_SIZE" ]; then
