@@ -257,21 +257,25 @@ jobs:
           echo "Prepared $count URLs ($skipped empty lines skipped)"
           echo "::endgroup::"
 
-          echo "::group::Download with aria2c (64 concurrent, 16 connections/server)"
+          echo "::group::Download with aria2c (256 concurrent, 16 connections/server)"
           aria2c \
             --input-file=/tmp/aria2_downloads.txt \
             --dir=downloads \
-            --max-concurrent-downloads=64 \
+            --max-concurrent-downloads=256 \
             --max-connection-per-server=16 \
             --split=16 \
-            --min-split-size=1M \
+            --min-split-size=512K \
             --disk-cache=1024M \
             --file-allocation=falloc \
             --max-tries=10 \
-            --retry-wait=5 \
+            --retry-wait=3 \
             --max-file-not-found=5 \
-            --connect-timeout=30 \
+            --connect-timeout=15 \
             --timeout=300 \
+            --lowest-speed-limit=100K \
+            --enable-http-pipelining=true \
+            --optimize-concurrent-downloads=true \
+            --uri-selector=adaptive \
             --console-log-level=warn \
             --summary-interval=15 \
             --auto-file-renaming=false \
@@ -356,10 +360,10 @@ jobs:
             local vid_start=$SECONDS
 
             # 1. Probe source dimensions
-            src_w=$(ffprobe -v error -analyzeduration 5M -probesize 5M -select_streams v:0 \
-              -show_entries stream=width  -of csv=p=0 "$video" 2>/dev/null)
-            src_h=$(ffprobe -v error -analyzeduration 5M -probesize 5M -select_streams v:0 \
-              -show_entries stream=height -of csv=p=0 "$video" 2>/dev/null)
+            src_w=$(timeout 30 ffprobe -v error -analyzeduration 5M -probesize 5M -select_streams v:0 \
+              -show_entries stream=width  -of csv=p=0 "$video" 2>/dev/null) || true
+            src_h=$(timeout 30 ffprobe -v error -analyzeduration 5M -probesize 5M -select_streams v:0 \
+              -show_entries stream=height -of csv=p=0 "$video" 2>/dev/null) || true
 
             if [ -z "$src_w" ] || [ -z "$src_h" ]; then
               echo "::warning::Cannot probe $filename — skipping"
@@ -374,7 +378,7 @@ jobs:
             echo "  ▶ $filename (${src_w}×${src_h})"
 
             # 2. Cropdetect over first 10 s
-            crop_info=$(ffmpeg -hwaccel auto -threads 2 -i "$video" -t 10 -an \
+            crop_info=$(timeout 120 ffmpeg -nostdin -hwaccel auto -threads 2 -i "$video" -t 10 -an \
               -vf cropdetect=24:16:0 -f null /dev/null 2>&1 \
               | grep -oP 'crop=[0-9]+:[0-9]+:[0-9]+:[0-9]+' | sort | uniq -c | sort -rn | head -1 \
               | awk '{print $2}' || echo "")
@@ -400,9 +404,9 @@ jobs:
 
             VF_ARGS="-vf ${CROP_PREFIX}${ENHANCE_FILTERS}"
 
-            # 4. Encode
+            # 4. Encode (timeout 1h per video)
             # shellcheck disable=SC2086
-            ffmpeg -y -nostdin \
+            timeout 3600 ffmpeg -y -nostdin \
               -hwaccel auto \
               -threads "${THREADS_PER_JOB}" \
               -i "$video" \
