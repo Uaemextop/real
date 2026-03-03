@@ -9,7 +9,7 @@ permissions:
 jobs:
   process-videos:
     runs-on: mp4  # GitHub Enterprise self-hosted runner with 64 vCPUs
-    timeout-minutes: 360
+    timeout-minutes: 480
 
     steps:
       - name: Checkout repository
@@ -58,7 +58,7 @@ jobs:
           aria2c \
             --input-file=/tmp/aria2_downloads.txt \
             --dir=downloads \
-            --max-concurrent-downloads=32 \
+            --max-concurrent-downloads=64 \
             --max-connection-per-server=16 \
             --split=16 \
             --min-split-size=1M \
@@ -79,13 +79,21 @@ jobs:
 
           echo "Downloaded $(ls downloads/ | wc -l) videos"
 
-      - name: Process videos - remove black borders and re-encode with CPU (64 vCPUs)
+      - name: Process videos - crop, denoise, sharpen and re-encode with CPU (64 vCPUs)
         run: |
-          # Use 64 vCPUs: run 8 parallel ffmpeg jobs, each with 8 threads
-          PARALLEL_JOBS=8
-          THREADS_PER_JOB=8
+          # Use 64 vCPUs: run 16 parallel ffmpeg jobs, each with 4 threads
+          # (x264 gains little above 4 threads per encode; more parallelism = better
+          #  throughput for 396 videos)
+          PARALLEL_JOBS=16
+          THREADS_PER_JOB=4
+
+          # Enhancement filter chain applied to every video:
+          #   hqdn3d=4:3:6:4.5  — temporal + spatial noise reduction
+          #   unsharp=5:5:1.0:5:5:0.0 — luma sharpening
+          ENHANCE_FILTERS="hqdn3d=4:3:6:4.5,unsharp=5:5:1.0:5:5:0.0"
 
           echo "Using CPU encoder: libx264 (${PARALLEL_JOBS} parallel jobs × ${THREADS_PER_JOB} threads = 64 vCPUs)"
+          echo "Filters: crop (auto) + noise reduction (hqdn3d) + sharpening (unsharp)"
 
           process_video() {
             local video="$1"
@@ -107,43 +115,38 @@ jobs:
               -show_entries stream=height -of csv=p=0 "$video" 2>/dev/null)
             echo "  Source dimensions: ${src_w}x${src_h}"
 
-            # 2. Run cropdetect and pick the most frequent crop (mode)
-            crop_info=$(ffmpeg -threads 2 -i "$video" -t 10 -vf cropdetect=24:16:0 -f null - 2>&1 \
+            # 2. Run cropdetect over first 30 seconds and pick the most frequent crop
+            crop_info=$(ffmpeg -threads 2 -i "$video" -t 30 -vf cropdetect=24:16:0 -f null - 2>&1 \
               | grep -oP 'crop=\S+' | sort | uniq -c | sort -rn | head -1 \
               | awk '{print $2}' || echo "")
 
-            # 3. Validate crop against source dimensions
-            VF_ARGS=""
+            # 3. Build filter chain: (crop +) denoise + sharpen
+            CROP_PREFIX=""
             if [ -n "$crop_info" ]; then
-              echo "  Detected crop: $crop_info"
               crop_w=$(echo "$crop_info" | cut -d= -f2 | cut -d: -f1)
               crop_h=$(echo "$crop_info" | cut -d= -f2 | cut -d: -f2)
               crop_x=$(echo "$crop_info" | cut -d= -f2 | cut -d: -f3)
               crop_y=$(echo "$crop_info" | cut -d= -f2 | cut -d: -f4)
-              # Ensure all four values are valid non-negative integers
-              if ! echo "$crop_w" | grep -qP '^[0-9]+$' || \
-                 ! echo "$crop_h" | grep -qP '^[0-9]+$' || \
-                 ! echo "$crop_x" | grep -qP '^[0-9]+$' || \
-                 ! echo "$crop_y" | grep -qP '^[0-9]+$'; then
-                echo "  WARNING: Non-numeric or negative crop values (w=${crop_w} h=${crop_h} x=${crop_x} y=${crop_y}), skipping crop"
-              # Width and height must be positive
-              elif [ "$crop_w" -eq 0 ] || [ "$crop_h" -eq 0 ]; then
-                echo "  WARNING: Zero crop dimensions (w=${crop_w}, h=${crop_h}), skipping crop"
-              # Crop region must fit within the source frame
-              elif [ -n "$src_w" ] && [ -n "$src_h" ] && \
-                   { [ "$((crop_x + crop_w))" -gt "$src_w" ] || [ "$((crop_y + crop_h))" -gt "$src_h" ]; }; then
-                echo "  WARNING: Crop ${crop_w}x${crop_h}+${crop_x}+${crop_y} exceeds source ${src_w}x${src_h}, skipping crop"
-              # Skip crop if it matches the full frame (nothing to crop)
-              elif [ "$crop_w" = "$src_w" ] && [ "$crop_h" = "$src_h" ] && \
-                   [ "$crop_x" = "0" ] && [ "$crop_y" = "0" ]; then
-                echo "  No black borders detected, skipping crop"
+              # Only apply crop if values are valid positive integers within frame bounds
+              if echo "$crop_w $crop_h $crop_x $crop_y" | grep -qP '^[0-9]+ [0-9]+ [0-9]+ [0-9]+$' && \
+                 [ "$crop_w" -gt 0 ] && [ "$crop_h" -gt 0 ] && \
+                 { [ -z "$src_w" ] || [ "$((crop_x + crop_w))" -le "$src_w" ]; } && \
+                 { [ -z "$src_h" ] || [ "$((crop_y + crop_h))" -le "$src_h" ]; }; then
+                if [ "$crop_w" != "$src_w" ] || [ "$crop_h" != "$src_h" ] || \
+                   [ "$crop_x" != "0" ] || [ "$crop_y" != "0" ]; then
+                  echo "  Applying crop: ${crop_w}x${crop_h}+${crop_x}+${crop_y}"
+                  CROP_PREFIX="${crop_info},"
+                else
+                  echo "  No black borders detected, skipping crop"
+                fi
               else
-                echo "  Applying crop: ${crop_w}x${crop_h}+${crop_x}+${crop_y}"
-                VF_ARGS="-vf ${crop_info}"
+                echo "  WARNING: Invalid crop values (${crop_info}), skipping crop"
               fi
             fi
 
-            # Encode with libx264 using high-quality settings and all assigned threads
+            VF_ARGS="-vf ${CROP_PREFIX}${ENHANCE_FILTERS}"
+
+            # Encode with libx264: high quality (CRF 17), slow preset for best compression
             # shellcheck disable=SC2086
             ffmpeg -y -threads "${THREADS_PER_JOB}" -i "$video" \
               $VF_ARGS \
@@ -164,11 +167,12 @@ jobs:
           }
 
           export -f process_video
-          export THREADS_PER_JOB
+          export THREADS_PER_JOB ENHANCE_FILTERS
 
           # Process all videos in parallel (up to PARALLEL_JOBS at once)
-          find downloads -maxdepth 1 -type f | \
-            xargs -P "${PARALLEL_JOBS}" -I{} bash -c 'process_video "$@"' _ {}
+          # Use -print0 / -0 to safely handle filenames with spaces or special characters
+          find downloads -maxdepth 1 -type f -print0 | \
+            xargs -0 -P "${PARALLEL_JOBS}" -I{} bash -c 'process_video "$@"' _ {}
 
           echo "Processed $(ls processed/ | wc -l) videos"
 
@@ -224,11 +228,13 @@ jobs:
           TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
           TAG="videos-${TIMESTAMP}"
           TITLE="Processed Videos - ${TIMESTAMP}"
-          BODY="Processed videos with black borders removed and re-encoded using CPU-optimized ffmpeg (64 vCPUs).
+          BODY="Processed $(ls processed/ 2>/dev/null | wc -l || echo '396') videos using CPU-optimized ffmpeg (64 vCPUs).
 
-          - Black borders auto-detected and cropped using ffmpeg cropdetect
+          - Black borders auto-detected and cropped (cropdetect over 30s sample)
+          - Noise reduction applied (hqdn3d: spatial + temporal)
+          - Sharpening applied (unsharp luma filter)
           - Re-encoded with libx264 (preset slow, CRF 17) for high quality
-          - 8 videos processed in parallel, each using 8 threads (64 vCPUs total)
+          - 16 videos processed in parallel, each using 4 threads (64 vCPUs total)
           - Videos split into zip parts (max ~1.9GB each)
 
           Total zip files: $(ls zips/*.zip 2>/dev/null | wc -l)"
