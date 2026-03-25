@@ -383,11 +383,11 @@ jobs:
                     -of csv=p=0 "$out_file" 2>/dev/null | awk '{printf "%d", $1}') || true
                   duration=${duration:-0}
                   if [ "$duration" -gt 0 ]; then
-                    # Calculate segment duration to keep each part under 49 MB (90% safety margin)
+                    # Calculate segment duration to keep each part under 49 MB (65% safety margin for VBR peaks)
                     local bps=$(( out_size / duration ))
                     [ "$bps" -lt 1 ] && bps=1
-                    local max_seg=$(( TG_MAX_SIZE * 9 / 10 / bps ))
-                    [ "$max_seg" -lt 10 ] && max_seg=10
+                    local max_seg=$(( TG_MAX_SIZE * 65 / 100 / bps ))
+                    [ "$max_seg" -lt 5 ] && max_seg=5
                     [ "$max_seg" -gt 600 ] && max_seg=600
                     # Split each part with stream copy (no re-encode)
                     local total_parts=$(( (duration + max_seg - 1) / max_seg ))
@@ -402,57 +402,50 @@ jobs:
                         "$part_file" > /dev/null 2>&1 || true
                       start=$((start + max_seg))
                     done
-                    # Upload all parts in order (process substitution avoids subshell counter bug)
-                    local actual_parts
-                    actual_parts=$(find "$tg_split_dir" -name 'part_*.mp4' 2>/dev/null | wc -l)
-                    if [ "$actual_parts" -gt 0 ]; then
-                      part_num=0
-                      while IFS= read -r part_file; do
-                        part_num=$((part_num + 1))
-                        local part_sz
-                        part_sz=$(stat -c%s "$part_file" 2>/dev/null || echo 0)
-                        if [ "$part_sz" -gt "$TG_MAX_SIZE" ]; then
-                          echo "    📨 ⚠ Part $part_num ($((part_sz/1024/1024))MB) still exceeds 49 MB, skipping"
-                          (
-                            flock 9
-                            echo $(($(cat /tmp/tg_skipped) + 1)) > /tmp/tg_skipped
-                          ) 9>/tmp/tg_lock
-                          continue
-                        fi
-                        echo "    📨 $output_name — part ${part_num}/${actual_parts} uploading to Telegram…"
-                        local tg_response
-                        tg_response=$(curl -s -w "\n%{http_code}" -X POST \
-                          "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
-                          -F "chat_id=${TELEGRAM_CHAT_ID}" \
-                          -F "video=@${part_file}" \
-                          -F "caption=${output_name} (part ${part_num}/${actual_parts})" \
-                          -F "supports_streaming=true" \
-                          --max-time 600 2>&1) || true
-                        local tg_http
-                        tg_http=$(echo "$tg_response" | tail -1)
-                        local tg_ok
-                        tg_ok=$(echo "$tg_response" | sed '$d' | grep -o '"ok":true' || true)
-                        if [ -n "$tg_ok" ]; then
-                          echo "    📨 ✅ Part ${part_num}/${actual_parts} sent to Telegram"
-                          (
-                            flock 9
-                            echo $(($(cat /tmp/tg_uploaded) + 1)) > /tmp/tg_uploaded
-                          ) 9>/tmp/tg_lock
-                        else
-                          echo "::warning::Telegram upload failed for $output_name part ${part_num} (HTTP $tg_http)"
-                          (
-                            flock 9
-                            echo $(($(cat /tmp/tg_errors) + 1)) > /tmp/tg_errors
-                          ) 9>/tmp/tg_lock
-                        fi
-                      done < <(find "$tg_split_dir" -name 'part_*.mp4' | sort)
-                    else
-                      echo "::warning::Split produced no parts for $output_name"
-                      (
-                        flock 9
-                        echo $(($(cat /tmp/tg_skipped) + 1)) > /tmp/tg_skipped
-                      ) 9>/tmp/tg_lock
-                    fi
+                    # Upload all parts in order (global lock prevents interleaving with other videos)
+                    {
+                      flock 8
+                      local actual_parts
+                      actual_parts=$(find "$tg_split_dir" -name 'part_*.mp4' 2>/dev/null | wc -l)
+                      if [ "$actual_parts" -gt 0 ]; then
+                        part_num=0
+                        while IFS= read -r part_file; do
+                          part_num=$((part_num + 1))
+                          echo "    📨 $output_name — part ${part_num}/${actual_parts} uploading to Telegram…"
+                          local tg_response
+                          tg_response=$(curl -s -w "\n%{http_code}" -X POST \
+                            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+                            -F "chat_id=${TELEGRAM_CHAT_ID}" \
+                            -F "video=@${part_file}" \
+                            -F "caption=${output_name} (part ${part_num}/${actual_parts})" \
+                            -F "supports_streaming=true" \
+                            --max-time 600 2>&1) || true
+                          local tg_http
+                          tg_http=$(echo "$tg_response" | tail -1)
+                          local tg_ok
+                          tg_ok=$(echo "$tg_response" | sed '$d' | grep -o '"ok":true' || true)
+                          if [ -n "$tg_ok" ]; then
+                            echo "    📨 ✅ Part ${part_num}/${actual_parts} sent to Telegram"
+                            (
+                              flock 9
+                              echo $(($(cat /tmp/tg_uploaded) + 1)) > /tmp/tg_uploaded
+                            ) 9>/tmp/tg_lock
+                          else
+                            echo "::warning::Telegram upload failed for $output_name part ${part_num} (HTTP $tg_http)"
+                            (
+                              flock 9
+                              echo $(($(cat /tmp/tg_errors) + 1)) > /tmp/tg_errors
+                            ) 9>/tmp/tg_lock
+                          fi
+                        done < <(find "$tg_split_dir" -name 'part_*.mp4' | sort)
+                      else
+                        echo "::warning::Split produced no parts for $output_name"
+                        (
+                          flock 9
+                          echo $(($(cat /tmp/tg_skipped) + 1)) > /tmp/tg_skipped
+                        ) 9>/tmp/tg_lock
+                      fi
+                    } 8>/tmp/tg_upload_order_lock
                   else
                     echo "::warning::Cannot determine duration for $output_name — skipping Telegram"
                     (
@@ -462,32 +455,36 @@ jobs:
                   fi
                   rm -rf "$tg_split_dir"
                 else
-                  echo "    📨 $output_name — uploading to Telegram…"
-                  local tg_response
-                  tg_response=$(curl -s -w "\n%{http_code}" -X POST \
-                    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
-                    -F "chat_id=${TELEGRAM_CHAT_ID}" \
-                    -F "video=@${out_file}" \
-                    -F "caption=${output_name}" \
-                    -F "supports_streaming=true" \
-                    --max-time 600 2>&1) || true
-                  local tg_http
-                  tg_http=$(echo "$tg_response" | tail -1)
-                  local tg_ok
-                  tg_ok=$(echo "$tg_response" | sed '$d' | grep -o '"ok":true' || true)
-                  if [ -n "$tg_ok" ]; then
-                    echo "    📨 ✅ Sent to Telegram"
-                    (
-                      flock 9
-                      echo $(($(cat /tmp/tg_uploaded) + 1)) > /tmp/tg_uploaded
-                    ) 9>/tmp/tg_lock
-                  else
-                    echo "::warning::Telegram upload failed for $output_name (HTTP $tg_http)"
-                    (
-                      flock 9
-                      echo $(($(cat /tmp/tg_errors) + 1)) > /tmp/tg_errors
-                    ) 9>/tmp/tg_lock
-                  fi
+                  # Single file upload (global lock prevents interleaving with other videos)
+                  {
+                    flock 8
+                    echo "    📨 $output_name — uploading to Telegram…"
+                    local tg_response
+                    tg_response=$(curl -s -w "\n%{http_code}" -X POST \
+                      "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+                      -F "chat_id=${TELEGRAM_CHAT_ID}" \
+                      -F "video=@${out_file}" \
+                      -F "caption=${output_name}" \
+                      -F "supports_streaming=true" \
+                      --max-time 600 2>&1) || true
+                    local tg_http
+                    tg_http=$(echo "$tg_response" | tail -1)
+                    local tg_ok
+                    tg_ok=$(echo "$tg_response" | sed '$d' | grep -o '"ok":true' || true)
+                    if [ -n "$tg_ok" ]; then
+                      echo "    📨 ✅ Sent to Telegram"
+                      (
+                        flock 9
+                        echo $(($(cat /tmp/tg_uploaded) + 1)) > /tmp/tg_uploaded
+                      ) 9>/tmp/tg_lock
+                    else
+                      echo "::warning::Telegram upload failed for $output_name (HTTP $tg_http)"
+                      (
+                        flock 9
+                        echo $(($(cat /tmp/tg_errors) + 1)) > /tmp/tg_errors
+                      ) 9>/tmp/tg_lock
+                    fi
+                  } 8>/tmp/tg_upload_order_lock
                 fi
               fi
             fi
