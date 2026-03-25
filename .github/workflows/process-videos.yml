@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   process-videos:
-    runs-on: mp4  # Enterprise runner: Ubuntu 24.04 · 64 cores · 256 GB RAM · 2040 GB SSD (no GPU)
+    runs-on: aapt  # Enterprise runner: Ubuntu 24.04 · 64 cores · 256 GB RAM · 2040 GB SSD (no GPU)
     timeout-minutes: 480
 
     steps:
