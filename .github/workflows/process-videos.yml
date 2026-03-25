@@ -238,9 +238,9 @@ jobs:
           TG_MAX_SIZE=$((50 * 1024 * 1024))
 
           echo "::group::Encoder configuration"
-          echo "Encoder  : libx264 preset fast CRF 15 · profile high · tune film"
-          echo "Decode   : software (Enterprise runner — no GPU)"
-          echo "Workers  : ${PARALLEL_JOBS} jobs × ${THREADS_PER_JOB} threads = 64 vCPUs"
+          echo "Encoder  : libx264 preset fast CRF 18 · profile high · tune film"
+          echo "Decode   : software (Enterprise runner — no GPU, decoder threads limited to 2)"
+          echo "Workers  : ${PARALLEL_JOBS} jobs × ${THREADS_PER_JOB} enc-threads + 2 dec-threads"
           echo "Filters  : crop (auto 10s) → hqdn3d (denoise) → cas (sharpen) → eq (color)"
           echo "I/O      : full tmpfs (downloads + processed in RAM)"
           echo "::endgroup::"
@@ -267,11 +267,11 @@ jobs:
 
             local vid_start=$SECONDS
 
-            # 1. Probe source dimensions
-            src_w=$(ffprobe -v error -analyzeduration 5M -probesize 5M -select_streams v:0 \
-              -show_entries stream=width  -of csv=p=0 "$video" 2>/dev/null) || true
-            src_h=$(ffprobe -v error -analyzeduration 5M -probesize 5M -select_streams v:0 \
-              -show_entries stream=height -of csv=p=0 "$video" 2>/dev/null) || true
+            # 1. Probe source dimensions (30 s timeout to avoid hanging on corrupt files)
+            src_w=$(timeout 30 ffprobe -v error -analyzeduration 5M -probesize 5M -select_streams v:0 \
+              -show_entries stream=width  -of csv=p=0 "$video" 2>/dev/null | tr -d '[:space:]') || true
+            src_h=$(timeout 30 ffprobe -v error -analyzeduration 5M -probesize 5M -select_streams v:0 \
+              -show_entries stream=height -of csv=p=0 "$video" 2>/dev/null | tr -d '[:space:]') || true
 
             if [ -z "$src_w" ] || [ -z "$src_h" ]; then
               echo "::warning::Cannot probe $filename — skipping"
@@ -285,13 +285,13 @@ jobs:
 
             echo "  ▶ $filename (${src_w}×${src_h})"
 
-            # 2. Cropdetect over first 10 s
-            crop_info=$(ffmpeg -nostdin -threads 2 -i "$video" -t 10 -an \
+            # 2. Cropdetect over first 10 s (60 s timeout)
+            crop_info=$(timeout 60 ffmpeg -nostdin -threads 2 -i "$video" -t 10 -an \
               -vf cropdetect=24:16:0 -f null /dev/null 2>&1 \
               | grep -oP 'crop=[0-9]+:[0-9]+:[0-9]+:[0-9]+' | sort | uniq -c | sort -rn | head -1 \
               | awk '{print $2}' || echo "")
 
-            # 3. Validate crop
+            # 3. Validate crop — only apply when ≥ 8 px removed per axis
             CROP_PREFIX=""
             if [ -n "$crop_info" ]; then
               crop_w=$(echo "$crop_info" | cut -d= -f2 | cut -d: -f1)
@@ -303,33 +303,41 @@ jobs:
                  [ "$crop_w" -gt 0 ] && [ "$crop_h" -gt 0 ] && \
                  [ "$((crop_x + crop_w))" -le "$src_w" ] && \
                  [ "$((crop_y + crop_h))" -le "$src_h" ]; then
-                if [ "$crop_w" != "$src_w" ] || [ "$crop_h" != "$src_h" ] || \
-                   [ "$crop_x" != "0" ]       || [ "$crop_y" != "0" ]; then
+                # Minimum crop threshold: at least 8 px difference on any axis
+                local w_diff=$(( src_w - crop_w ))
+                local h_diff=$(( src_h - crop_h ))
+                if [ "$w_diff" -ge 8 ] || [ "$h_diff" -ge 8 ]; then
                   # Ensure even dimensions and offsets (required by yuv420p / x264)
                   crop_w=$((crop_w / 2 * 2))
                   crop_h=$((crop_h / 2 * 2))
                   crop_x=$((crop_x / 2 * 2))
                   crop_y=$((crop_y / 2 * 2))
-                  CROP_PREFIX="crop=${crop_w}:${crop_h}:${crop_x}:${crop_y},"
+                  # Re-validate that rounded crop still fits within source
+                  if [ "$((crop_x + crop_w))" -le "$src_w" ] && \
+                     [ "$((crop_y + crop_h))" -le "$src_h" ] && \
+                     [ "$crop_w" -gt 0 ] && [ "$crop_h" -gt 0 ]; then
+                    CROP_PREFIX="crop=${crop_w}:${crop_h}:${crop_x}:${crop_y},"
+                  fi
                 fi
               fi
             fi
 
-            VF_ARGS="-vf ${CROP_PREFIX}${ENHANCE_FILTERS}"
+            # Ensure even output dimensions for yuv420p compatibility
+            VF_ARGS="-vf ${CROP_PREFIX}${ENHANCE_FILTERS},scale=trunc(iw/2)*2:trunc(ih/2)*2"
 
             echo "    🎬 $filename — encoding…"
 
             # 4. Encode — output always as .mp4 for correct container format
-            # -threads MUST be after -i to apply to the encoder (libx264).
-            # Before -i it only sets decoder threads; x264 ignores it and
-            # auto-detects (e.g. 22+), causing massive thread oversubscription
-            # when running 16 parallel workers (16×22 = 352 threads on 64 cores).
+            # -threads 2 BEFORE -i limits decoder threads (prevents 16×22 = 352
+            # thread oversubscription when running 16 parallel workers on 64 cores).
+            # -threads ${THREADS_PER_JOB} AFTER -i limits encoder (libx264) threads.
+            # Total: 16 × (2 dec + 4 enc) = 96 threads on 64 cores — manageable.
             local logfile="/tmp/ffmpeg_${filename}.log"
             # shellcheck disable=SC2086
-            ffmpeg -y -nostdin \
+            timeout 3600 ffmpeg -y -nostdin -threads 2 \
               -i "$video" \
               $VF_ARGS \
-              -c:v libx264 -preset fast -crf 15 -threads "${THREADS_PER_JOB}" \
+              -c:v libx264 -preset fast -crf 18 -threads "${THREADS_PER_JOB}" \
               -profile:v high -level:v 4.1 -tune film \
               -x264-params "aq-mode=3:aq-strength=0.8:psy-rd=1.0,0.15:deblock=-1,-1:rc-lookahead=30:bframes=3:ref=4" \
               -c:a aac -b:a 256k -ar 48000 \
@@ -338,13 +346,19 @@ jobs:
                 echo "::warning::Encode failed for $filename — fallback re-encode (no filters)"
                 tail -5 "$logfile" 2>/dev/null || true
                 # Fallback: re-encode without enhancement filters to produce a playable MP4
-                ffmpeg -y -nostdin -i "$video" \
+                timeout 1800 ffmpeg -y -nostdin -threads 2 -i "$video" \
                   -c:v libx264 -preset ultrafast -crf 23 -threads "${THREADS_PER_JOB}" \
                   -c:a aac -b:a 128k -ar 44100 \
                   -pix_fmt yuv420p -movflags +faststart \
                   "processed/${output_name}" > /dev/null 2>&1 || {
-                    echo "::warning::Fallback also failed for $filename — copying original"
-                    cp "$video" "processed/${output_name}"
+                    echo "::warning::Fallback also failed for $filename — remuxing original to MP4"
+                    # Remux into proper MP4 container (plain cp would break playback)
+                    timeout 300 ffmpeg -y -nostdin -i "$video" \
+                      -c copy -movflags +faststart \
+                      "processed/${output_name}" > /dev/null 2>&1 || {
+                        echo "::warning::Remux failed for $filename — copying raw file"
+                        cp "$video" "processed/${output_name}"
+                      }
                   }
                 (
                   flock 9
@@ -360,11 +374,80 @@ jobs:
                 local out_size
                 out_size=$(stat -c%s "$out_file" 2>/dev/null || echo 0)
                 if [ "$out_size" -gt "$TG_MAX_SIZE" ]; then
-                  echo "    📨 $output_name — $(( out_size / 1024 / 1024 ))MB exceeds 50 MB, Telegram skipped"
-                  (
-                    flock 9
-                    echo $(($(cat /tmp/tg_skipped) + 1)) > /tmp/tg_skipped
-                  ) 9>/tmp/tg_lock
+                  # Split large video into ≤ 50 MB segments and upload each part
+                  echo "    📨 $output_name — $(( out_size / 1024 / 1024 ))MB exceeds 50 MB, splitting…"
+                  local tg_split_dir="/tmp/tg_split_$$_${RANDOM}"
+                  mkdir -p "$tg_split_dir"
+                  local duration
+                  duration=$(timeout 30 ffprobe -v error -show_entries format=duration \
+                    -of csv=p=0 "$out_file" 2>/dev/null | cut -d. -f1) || true
+                  duration=${duration:-0}
+                  if [ "$duration" -gt 0 ]; then
+                    # Calculate segment duration to keep each part under 50 MB (90% safety)
+                    local bps=$(( out_size / duration ))
+                    local max_seg=$(( TG_MAX_SIZE * 9 / 10 / bps ))
+                    [ "$max_seg" -lt 10 ] && max_seg=10
+                    timeout 600 ffmpeg -y -nostdin -threads 2 -i "$out_file" \
+                      -c copy -f segment -segment_time "$max_seg" \
+                      -reset_timestamps 1 \
+                      "${tg_split_dir}/part_%03d.mp4" > /dev/null 2>&1 || true
+                    local part_num=0
+                    local total_parts
+                    total_parts=$(find "$tg_split_dir" -name 'part_*.mp4' | wc -l)
+                    for part_file in $(find "$tg_split_dir" -name 'part_*.mp4' | sort); do
+                      part_num=$((part_num + 1))
+                      local part_sz
+                      part_sz=$(stat -c%s "$part_file" 2>/dev/null || echo 0)
+                      if [ "$part_sz" -gt "$TG_MAX_SIZE" ]; then
+                        echo "    📨 ⚠ Part $part_num ($((part_sz/1024/1024))MB) still exceeds 50 MB, skipping"
+                        (
+                          flock 9
+                          echo $(($(cat /tmp/tg_skipped) + 1)) > /tmp/tg_skipped
+                        ) 9>/tmp/tg_lock
+                        continue
+                      fi
+                      echo "    📨 $output_name — part ${part_num}/${total_parts} uploading to Telegram…"
+                      local tg_response
+                      tg_response=$(curl -s -w "\n%{http_code}" -X POST \
+                        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+                        -F "chat_id=${TELEGRAM_CHAT_ID}" \
+                        -F "video=@${part_file}" \
+                        -F "caption=${output_name} (part ${part_num}/${total_parts})" \
+                        -F "supports_streaming=true" \
+                        --max-time 600 2>&1) || true
+                      local tg_http
+                      tg_http=$(echo "$tg_response" | tail -1)
+                      local tg_ok
+                      tg_ok=$(echo "$tg_response" | sed '$d' | grep -o '"ok":true' || true)
+                      if [ -n "$tg_ok" ]; then
+                        echo "    📨 ✅ Part ${part_num}/${total_parts} sent to Telegram"
+                        (
+                          flock 9
+                          echo $(($(cat /tmp/tg_uploaded) + 1)) > /tmp/tg_uploaded
+                        ) 9>/tmp/tg_lock
+                      else
+                        echo "::warning::Telegram upload failed for $output_name part ${part_num} (HTTP $tg_http)"
+                        (
+                          flock 9
+                          echo $(($(cat /tmp/tg_errors) + 1)) > /tmp/tg_errors
+                        ) 9>/tmp/tg_lock
+                      fi
+                    done
+                    if [ "$total_parts" -eq 0 ]; then
+                      echo "::warning::Split produced no parts for $output_name"
+                      (
+                        flock 9
+                        echo $(($(cat /tmp/tg_skipped) + 1)) > /tmp/tg_skipped
+                      ) 9>/tmp/tg_lock
+                    fi
+                  else
+                    echo "::warning::Cannot determine duration for $output_name — skipping Telegram"
+                    (
+                      flock 9
+                      echo $(($(cat /tmp/tg_skipped) + 1)) > /tmp/tg_skipped
+                    ) 9>/tmp/tg_lock
+                  fi
+                  rm -rf "$tg_split_dir"
                 else
                   echo "    📨 $output_name — uploading to Telegram…"
                   local tg_response
@@ -448,13 +531,13 @@ jobs:
           echo "Errors    : $error_count"
           echo "Time      : ${ELAPSED}s"
           if [ "$UPLOAD_TELEGRAM" = "yes" ]; then
-            echo "Telegram  : ${tg_uploaded} sent, ${tg_skipped} skipped (>50 MB), ${tg_errors} errors"
+            echo "Telegram  : ${tg_uploaded} sent (incl. split parts), ${tg_skipped} skipped, ${tg_errors} errors"
           fi
           echo "::endgroup::"
 
           # Write Telegram status for dashboard
           if [ "$UPLOAD_TELEGRAM" = "yes" ]; then
-            echo "✅ Done | ${tg_uploaded} sent, ${tg_skipped} skipped (>50 MB), ${tg_errors} errors (inline)" > /tmp/telegram_status.txt
+            echo "✅ Done | ${tg_uploaded} sent (incl. split parts), ${tg_skipped} skipped, ${tg_errors} errors (inline)" > /tmp/telegram_status.txt
           else
             echo "⏭️ Skipped | telegram=no" > /tmp/telegram_status.txt
           fi
@@ -737,7 +820,7 @@ jobs:
           - Noise reduction: hqdn3d (light spatial + moderate temporal)
           - Sharpening: CAS (Contrast Adaptive Sharpen)
           - Color: subtle contrast & saturation boost (eq filter)
-          - Encoder: libx264 preset fast CRF 15 · profile high · tune film
+          - Encoder: libx264 preset fast CRF 18 · profile high · tune film
           - x264: aq-mode=3, psy-rd=1.0, deblock=-1, ref=4
           - Audio: AAC 256 kbps 48 kHz
           - ZIP parts: max ~1.9 GB each"
