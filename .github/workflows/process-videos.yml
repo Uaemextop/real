@@ -68,13 +68,14 @@ jobs:
 
           echo "::group::GitHub CLI"
           if ! command -v gh &>/dev/null; then
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-              | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-              | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-            sudo apt-get update -qq > /dev/null
-            sudo apt-get install -y -qq gh > /dev/null
-            echo "Installed GitHub CLI"
+            # Install gh from the latest .deb release (avoids APT repo GPG key issues)
+            GH_VER=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest \
+              | grep -oP '"tag_name":\s*"v\K[^"]+')
+            curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.deb" \
+              -o /tmp/gh.deb
+            sudo dpkg -i /tmp/gh.deb > /dev/null
+            rm -f /tmp/gh.deb
+            echo "Installed GitHub CLI v${GH_VER}"
           else
             echo "GitHub CLI already available: $(gh --version | head -1)"
           fi
@@ -254,6 +255,12 @@ jobs:
 
             local vid_start=$SECONDS
 
+            # Always output as .mp4 regardless of input format.
+            # FFmpeg determines the container from the output extension; non-MP4
+            # extensions (.avi, .wmv, .webm, etc.) cause container/codec mismatches
+            # and -movflags +faststart failures, producing unplayable files.
+            local output_name="${filename%.*}.mp4"
+
             # 1. Probe source dimensions
             src_w=$(ffprobe -v error -analyzeduration 5M -probesize 5M -select_streams v:0 \
               -show_entries stream=width  -of csv=p=0 "$video" 2>/dev/null) || true
@@ -270,7 +277,7 @@ jobs:
               return
             fi
 
-            echo "  ▶ $filename (${src_w}×${src_h})"
+            echo "  ▶ $filename (${src_w}×${src_h}) → ${output_name}"
 
             # 2. Cropdetect over first 10 s
             crop_info=$(ffmpeg -nostdin -threads 2 -i "$video" -t 10 -an \
@@ -316,10 +323,23 @@ jobs:
               -x264-params "aq-mode=3:aq-strength=0.8:psy-rd=1.0,0.15:deblock=-1,-1:rc-lookahead=30:bframes=3:ref=4" \
               -c:a aac -b:a 256k -ar 48000 \
               -pix_fmt yuv420p -movflags +faststart \
-              "processed/${filename}" > /dev/null 2>"$logfile" || {
-                echo "::warning::Encode failed for $filename — copying original"
+              "processed/${output_name}" > /dev/null 2>"$logfile" || {
+                echo "::warning::Full encode failed for $filename — trying simple re-encode to MP4…"
                 tail -5 "$logfile" 2>/dev/null || true
-                cp "$video" "processed/${filename}"
+                # Fallback: simple re-encode without filters to ensure valid MP4 output
+                ffmpeg -y -nostdin -i "$video" \
+                  -c:v libx264 -preset fast -crf 18 -threads "${THREADS_PER_JOB}" \
+                  -c:a aac -b:a 256k -ar 48000 \
+                  -pix_fmt yuv420p -movflags +faststart \
+                  "processed/${output_name}" > /dev/null 2>&1 || {
+                    echo "::warning::Simple re-encode also failed for $filename — skipping"
+                    (
+                      flock 9
+                      echo $(($(cat /tmp/vid_errors) + 1)) > /tmp/vid_errors
+                    ) 9>/tmp/vid_lock
+                    rm -f "$logfile" "$video"
+                    return
+                  }
                 (
                   flock 9
                   echo $(($(cat /tmp/vid_errors) + 1)) > /tmp/vid_errors
