@@ -267,10 +267,10 @@ jobs:
 
             local vid_start=$SECONDS
 
-            # 1. Probe source dimensions (30 s timeout to avoid hanging on corrupt files)
-            src_w=$(timeout 30 ffprobe -v error -analyzeduration 5M -probesize 5M -select_streams v:0 \
+            # 1. Probe source dimensions
+            src_w=$(ffprobe -v error -analyzeduration 5M -probesize 5M -select_streams v:0 \
               -show_entries stream=width  -of csv=p=0 "$video" 2>/dev/null | tr -d '[:space:]') || true
-            src_h=$(timeout 30 ffprobe -v error -analyzeduration 5M -probesize 5M -select_streams v:0 \
+            src_h=$(ffprobe -v error -analyzeduration 5M -probesize 5M -select_streams v:0 \
               -show_entries stream=height -of csv=p=0 "$video" 2>/dev/null | tr -d '[:space:]') || true
 
             if [ -z "$src_w" ] || [ -z "$src_h" ]; then
@@ -285,8 +285,8 @@ jobs:
 
             echo "  ▶ $filename (${src_w}×${src_h})"
 
-            # 2. Cropdetect over first 10 s (60 s timeout)
-            crop_info=$(timeout 60 ffmpeg -nostdin -threads 2 -i "$video" -t 10 -an \
+            # 2. Cropdetect over first 10 s
+            crop_info=$(ffmpeg -nostdin -threads 2 -i "$video" -t 10 -an \
               -vf cropdetect=24:16:0 -f null /dev/null 2>&1 \
               | grep -oP 'crop=[0-9]+:[0-9]+:[0-9]+:[0-9]+' | sort | uniq -c | sort -rn | head -1 \
               | awk '{print $2}' || echo "")
@@ -334,7 +334,7 @@ jobs:
             # Total: 16 × (2 dec + 4 enc) = 96 threads on 64 cores — manageable.
             local logfile="/tmp/ffmpeg_${filename}.log"
             # shellcheck disable=SC2086
-            timeout 3600 ffmpeg -y -nostdin -threads 2 \
+            ffmpeg -y -nostdin -threads 2 \
               -i "$video" \
               $VF_ARGS \
               -c:v libx264 -preset fast -crf 18 -threads "${THREADS_PER_JOB}" \
@@ -346,14 +346,14 @@ jobs:
                 echo "::warning::Encode failed for $filename — fallback re-encode (no filters)"
                 tail -5 "$logfile" 2>/dev/null || true
                 # Fallback: re-encode without enhancement filters to produce a playable MP4
-                timeout 1800 ffmpeg -y -nostdin -threads 2 -i "$video" \
+                ffmpeg -y -nostdin -threads 2 -i "$video" \
                   -c:v libx264 -preset ultrafast -crf 23 -threads "${THREADS_PER_JOB}" \
                   -c:a aac -b:a 128k -ar 44100 \
                   -pix_fmt yuv420p -movflags +faststart \
                   "processed/${output_name}" > /dev/null 2>&1 || {
                     echo "::warning::Fallback also failed for $filename — remuxing original to MP4"
                     # Remux into proper MP4 container (plain cp would break playback)
-                    timeout 300 ffmpeg -y -nostdin -i "$video" \
+                    ffmpeg -y -nostdin -i "$video" \
                       -c copy -movflags +faststart \
                       "processed/${output_name}" > /dev/null 2>&1 || {
                         echo "::warning::Remux failed for $filename — copying raw file"
@@ -379,7 +379,7 @@ jobs:
                   local tg_split_dir="/tmp/tg_split_$$_${RANDOM}"
                   mkdir -p "$tg_split_dir"
                   local duration
-                  duration=$(timeout 30 ffprobe -v error -show_entries format=duration \
+                  duration=$(ffprobe -v error -show_entries format=duration \
                     -of csv=p=0 "$out_file" 2>/dev/null | awk '{printf "%d", $1}') || true
                   duration=${duration:-0}
                   if [ "$duration" -gt 0 ]; then
@@ -389,7 +389,7 @@ jobs:
                     local max_seg=$(( TG_MAX_SIZE * 9 / 10 / bps ))
                     [ "$max_seg" -lt 10 ] && max_seg=10
                     [ "$max_seg" -gt 600 ] && max_seg=600
-                    timeout 900 ffmpeg -y -nostdin -threads 2 -i "$out_file" \
+                    ffmpeg -y -nostdin -threads 2 -i "$out_file" \
                       -c copy -f segment -segment_time "$max_seg" \
                       -reset_timestamps 1 \
                       "${tg_split_dir}/part_%03d.mp4" > /dev/null 2>&1 || true
