@@ -125,6 +125,13 @@ jobs:
           cp /tmp/dashboard.md "$GITHUB_STEP_SUMMARY"
           echo "::endgroup::"
 
+      - name: Scrape fresh video URLs
+        run: |
+          echo "::group::Scrape video URLs from live site"
+          chmod +x scrape_videos.sh
+          CONCURRENT=20 CURL_TIMEOUT=30 ./scrape_videos.sh
+          echo "::endgroup::"
+
       - name: Download videos
         run: |
           PHASE_START=$SECONDS
@@ -152,6 +159,7 @@ jobs:
           aria2c \
             --input-file=/tmp/aria2_downloads.txt \
             --dir=downloads \
+            --referer="https://realsuperlandiaxxx.online/" \
             --max-concurrent-downloads=64 \
             --max-connection-per-server=16 \
             --split=16 \
