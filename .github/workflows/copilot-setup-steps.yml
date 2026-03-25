@@ -11,9 +11,9 @@ on:
 
 jobs:
   copilot-setup-steps:
-    runs-on: aapt
+    runs-on: aapt2
     permissions:
-      contents: read
+      contents: write
 
     steps:
       - name: Checkout repository
