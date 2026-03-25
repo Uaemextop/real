@@ -80,11 +80,12 @@ for cat in "${CATEGORIES[@]}"; do
     fi
 
     # Extract post links: href="https://realsuperlandiaxxx.online/(brother|daddy|mommy)-NNN/"
+    post_link_re="href=\"${SITE_URL}/(brother|daddy|mommy)-\\d+/\""
     links_found=0
-    grep -oP "href=\"${SITE_URL}/(brother|daddy|mommy)-\\d+/\"" "$listing" \
+    grep -oP "$post_link_re" "$listing" \
       | sed 's/href="//;s/"$//' \
       | sort -u >> "$post_urls_file"
-    links_found=$(grep -oP "href=\"${SITE_URL}/(brother|daddy|mommy)-\\d+/\"" "$listing" | sort -u | wc -l)
+    links_found=$(grep -oP "$post_link_re" "$listing" | sort -u | wc -l)
 
     # Also capture the base category URL (e.g., /brother/ without number)
     grep -oP "href=\"${SITE_URL}/${cat}/\"" "$listing" \
@@ -213,6 +214,14 @@ log "Phase 3 — Writing output files …"
 
 # Sort metadata by category then upload date for consistency
 sort -t'|' -k2,2 -k6,6 "$metadata_file" > "$TMPDIR_SCRAPE/metadata_sorted.txt"
+
+# Backup existing files before overwriting
+for f in video_urls.txt url_list.txt; do
+  if [[ -f "${OUTPUT_DIR}/${f}" ]]; then
+    cp "${OUTPUT_DIR}/${f}" "${OUTPUT_DIR}/${f}.bak"
+    log "Backed up ${f} → ${f}.bak"
+  fi
+done
 
 # video_urls.txt — full metadata (pipe-separated)
 cp "$TMPDIR_SCRAPE/metadata_sorted.txt" "${OUTPUT_DIR}/video_urls.txt"
