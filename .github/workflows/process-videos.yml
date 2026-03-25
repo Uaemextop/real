@@ -229,10 +229,11 @@ jobs:
           ENHANCE_FILTERS="hqdn3d=3:2:5:3.5,cas=0.4,eq=contrast=1.03:saturation=1.08"
 
           echo "::group::Encoder configuration"
-          echo "Encoder  : libx264 preset fast CRF 15 · profile high · tune film"
+          echo "Encoder  : libx264 preset fast CRF 18 · profile high · tune film"
           echo "Decode   : software (Enterprise runner — no GPU)"
           echo "Workers  : ${PARALLEL_JOBS} jobs × ${THREADS_PER_JOB} threads = 64 vCPUs"
           echo "Filters  : crop (auto 10s) → hqdn3d (denoise) → cas (sharpen) → eq (color)"
+          echo "Output   : always .mp4 container (H.264 + AAC)"
           echo "I/O      : full tmpfs (downloads + processed in RAM)"
           echo "::endgroup::"
 
@@ -251,6 +252,11 @@ jobs:
               *.mp4|*.mkv|*.avi|*.mov|*.wmv|*.flv|*.webm|*.m4v|*.mpg|*.mpeg) ;;
               *) echo "  Skipping non-video: $filename"; rm -f "$video"; return ;;
             esac
+
+            # Always output as .mp4 to ensure correct container for H.264/AAC.
+            # Non-MP4 extensions (e.g. .avi, .wmv, .webm) would produce files with
+            # incompatible container/codec combinations causing playback errors.
+            local out_name="${filename%.*}.mp4"
 
             local vid_start=$SECONDS
 
@@ -311,21 +317,37 @@ jobs:
             ffmpeg -y -nostdin \
               -i "$video" \
               $VF_ARGS \
-              -c:v libx264 -preset fast -crf 15 -threads "${THREADS_PER_JOB}" \
+              -c:v libx264 -preset fast -crf 18 -threads "${THREADS_PER_JOB}" \
               -profile:v high -level:v 4.1 -tune film \
               -x264-params "aq-mode=3:aq-strength=0.8:psy-rd=1.0,0.15:deblock=-1,-1:rc-lookahead=30:bframes=3:ref=4" \
               -c:a aac -b:a 256k -ar 48000 \
               -pix_fmt yuv420p -movflags +faststart \
-              "processed/${filename}" > /dev/null 2>"$logfile" || {
-                echo "::warning::Encode failed for $filename — copying original"
+              "processed/${out_name}" > /dev/null 2>"$logfile" || {
+                echo "::warning::Encode failed for $filename — copying original as MP4"
                 tail -5 "$logfile" 2>/dev/null || true
-                cp "$video" "processed/${filename}"
+                # Re-mux to MP4 container instead of raw copy to ensure playability
+                ffmpeg -y -nostdin -i "$video" -c copy -movflags +faststart \
+                  "processed/${out_name}" > /dev/null 2>&1 || \
+                  cp "$video" "processed/${out_name}"
                 (
                   flock 9
                   echo $(($(cat /tmp/vid_errors) + 1)) > /tmp/vid_errors
                 ) 9>/tmp/vid_lock
               }
             rm -f "$logfile"
+
+            # 5. Validate output is a playable MP4
+            if [ -f "processed/${out_name}" ]; then
+              if ! ffprobe -v error -select_streams v:0 -show_entries stream=codec_name \
+                   -of csv=p=0 "processed/${out_name}" > /dev/null 2>&1; then
+                echo "::warning::Output validation failed for ${out_name} — removing"
+                rm -f "processed/${out_name}"
+                (
+                  flock 9
+                  echo $(($(cat /tmp/vid_errors) + 1)) > /tmp/vid_errors
+                ) 9>/tmp/vid_lock
+              fi
+            fi
 
             rm -f "$video"
 
@@ -334,7 +356,7 @@ jobs:
               flock 9
               done_count=$(($(cat /tmp/vid_done) + 1)); echo "$done_count" > /tmp/vid_done
               total=$(cat /tmp/vid_total)
-              echo "  ✓ $filename (${vid_elapsed}s) [$done_count/$total]"
+              echo "  ✓ ${out_name} (${vid_elapsed}s) [$done_count/$total]"
             ) 9>/tmp/vid_lock
           }
 
@@ -518,30 +540,34 @@ jobs:
             [ -f "$video" ] || continue
             file_size=$(stat -c%s "$video")
 
-            # Files that exceed the GitHub limit are split into MAX_SIZE chunks.
+            # Files that exceed the GitHub limit are re-encoded at higher CRF
+            # to reduce size. Binary splitting (split -b) produces non-playable
+            # file fragments that cause "error playing video".
             if [ "$file_size" -ge "$GITHUB_LIMIT" ]; then
-              echo "  ⚡ Splitting $(basename "$video") ($((file_size / 1024 / 1024))MB) into ~1.9 GB parts..."
-              # Close the current accumulation zip before starting split parts.
-              if [ "$current_size" -gt 0 ]; then
-                zip_index=$((zip_index + 1))
-                current_size=0
-                current_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
+              echo "  ⚡ Re-encoding $(basename "$video") ($((file_size / 1024 / 1024))MB) — too large for GitHub release"
+              shrunk="/tmp/shrunk_$(basename "$video")"
+              ffmpeg -y -nostdin -i "$video" \
+                -c:v libx264 -preset fast -crf 23 -threads 4 \
+                -profile:v high -level:v 4.1 -tune film \
+                -c:a aac -b:a 192k -ar 48000 \
+                -pix_fmt yuv420p -movflags +faststart \
+                "$shrunk" > /dev/null 2>&1
+              if [ -f "$shrunk" ]; then
+                shrunk_size=$(stat -c%s "$shrunk")
+                if [ "$shrunk_size" -lt "$GITHUB_LIMIT" ]; then
+                  echo "    ✅ Re-encoded to $((shrunk_size / 1024 / 1024))MB"
+                  mv "$shrunk" "$video"
+                  file_size=$shrunk_size
+                else
+                  echo "    ⚠️ Still too large ($((shrunk_size / 1024 / 1024))MB) — skipping"
+                  rm -f "$shrunk" "$video"
+                  continue
+                fi
+              else
+                echo "    ⚠️ Re-encode failed — skipping"
+                rm -f "$video"
+                continue
               fi
-              split -b "$MAX_SIZE" "$video" "${video}.part." \
-                || { echo "  ❌ ERROR: split failed for $(basename "$video")" >&2; exit 1; }
-              for part in "${video}".part.*; do
-                part_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
-                part_size=$(stat -c%s "$part")
-                echo "    $(basename "$part") ($((part_size / 1024 / 1024))MB) → $part_zip"
-                zip -j -0 "$part_zip" "$part" > /dev/null
-                rm -f "$part"
-                zip_index=$((zip_index + 1))
-              done
-              # Reset accumulation state for subsequent files.
-              current_size=0
-              current_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
-              rm -f "$video"
-              continue
             fi
 
             if [ "$file_size" -ge "$MAX_SIZE" ]; then
@@ -642,7 +668,7 @@ jobs:
           - Noise reduction: hqdn3d (light spatial + moderate temporal)
           - Sharpening: CAS (Contrast Adaptive Sharpen)
           - Color: subtle contrast & saturation boost (eq filter)
-          - Encoder: libx264 preset fast CRF 15 · profile high · tune film
+          - Encoder: libx264 preset fast CRF 18 · profile high · tune film
           - x264: aq-mode=3, psy-rd=1.0, deblock=-1, ref=4
           - Audio: AAC 256 kbps 48 kHz
           - ZIP parts: max ~1.9 GB each"
