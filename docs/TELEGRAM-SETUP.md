@@ -184,5 +184,5 @@ Videos larger than 50 MB are automatically skipped during the Telegram upload ph
 
 ## Token Refresh
 
-Telegram bot tokens **do not expire** unless you revoke them via @BotFather (`/revoktoken`).
+Telegram bot tokens **do not expire** unless you revoke them via @BotFather (`/revoketoken`).
 If you revoke a token, generate a new one and update the `TELEGRAM_BOT_TOKEN` GitHub Secret.

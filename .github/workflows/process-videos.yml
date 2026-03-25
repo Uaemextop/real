@@ -305,9 +305,11 @@ jobs:
                  [ "$((crop_y + crop_h))" -le "$src_h" ]; then
                 if [ "$crop_w" != "$src_w" ] || [ "$crop_h" != "$src_h" ] || \
                    [ "$crop_x" != "0" ]       || [ "$crop_y" != "0" ]; then
-                  # Ensure even dimensions (required by yuv420p / x264)
+                  # Ensure even dimensions and offsets (required by yuv420p / x264)
                   crop_w=$((crop_w / 2 * 2))
                   crop_h=$((crop_h / 2 * 2))
+                  crop_x=$((crop_x / 2 * 2))
+                  crop_y=$((crop_y / 2 * 2))
                   CROP_PREFIX="crop=${crop_w}:${crop_h}:${crop_x}:${crop_y},"
                 fi
               fi
@@ -559,14 +561,15 @@ jobs:
             [ -f "$video" ] || continue
             vname=$(basename "$video")
             vsize=$(stat -c%s "$video")
+            vsize_mb=$(( vsize / 1024 / 1024 ))
 
             if [ "$vsize" -gt "$TG_MAX_SIZE" ]; then
-              echo "  ⏭️ $vname — $(( vsize / 1024 / 1024 ))MB exceeds 50 MB limit, skipped"
+              echo "  ⏭️ $vname — ${vsize_mb}MB exceeds 50 MB limit, skipped"
               skipped=$((skipped + 1))
               continue
             fi
 
-            echo "  📤 $vname ($(( vsize / 1024 / 1024 ))MB)…"
+            echo "  📤 $vname (${vsize_mb}MB)…"
             response=$(curl -s -w "\n%{http_code}" -X POST \
               "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
               -F "chat_id=${TELEGRAM_CHAT_ID}" \
