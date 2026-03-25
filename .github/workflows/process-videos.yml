@@ -19,7 +19,7 @@ on:
         default: 'ProcessedVideos'
         type: string
       upload_telegram:
-        description: 'Upload processed videos to a Telegram channel (requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID secrets)'
+        description: 'Upload each processed video to Telegram immediately after encoding (requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID secrets)'
         required: false
         default: 'no'
         type: choice
@@ -240,6 +240,9 @@ jobs:
 
           ENHANCE_FILTERS="hqdn3d=3:2:5:3.5,cas=0.4,eq=contrast=1.03:saturation=1.08"
 
+          # Telegram Bot API file size limit (50 MB)
+          TG_MAX_SIZE=$((50 * 1024 * 1024))
+
           echo "::group::Encoder configuration"
           echo "Encoder  : libx264 preset fast CRF 15 · profile high · tune film"
           echo "Decode   : software (Enterprise runner — no GPU)"
@@ -358,12 +361,11 @@ jobs:
 
             # 5. Upload to Telegram immediately after encoding (if enabled)
             if [ "$UPLOAD_TELEGRAM" = "yes" ] && [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-              local tg_max=$((50 * 1024 * 1024))
               local out_file="processed/${output_name}"
               if [ -f "$out_file" ]; then
                 local out_size
                 out_size=$(stat -c%s "$out_file" 2>/dev/null || echo 0)
-                if [ "$out_size" -gt "$tg_max" ]; then
+                if [ "$out_size" -gt "$TG_MAX_SIZE" ]; then
                   echo "    📨 $output_name — $(( out_size / 1024 / 1024 ))MB exceeds 50 MB, Telegram skipped"
                   (
                     flock 9
@@ -412,7 +414,7 @@ jobs:
           }
 
           export -f process_video
-          export THREADS_PER_JOB ENHANCE_FILTERS UPLOAD_TELEGRAM TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
+          export THREADS_PER_JOB ENHANCE_FILTERS UPLOAD_TELEGRAM TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TG_MAX_SIZE
 
           echo "::group::Encoding $TOTAL_VIDEOS videos (${PARALLEL_JOBS} parallel workers)"
 
@@ -422,9 +424,13 @@ jobs:
               _done=$(cat /tmp/vid_done 2>/dev/null || echo 0)
               _total=$(cat /tmp/vid_total 2>/dev/null || echo 0)
               _errors=$(cat /tmp/vid_errors 2>/dev/null || echo 0)
-              _tg=$(cat /tmp/tg_uploaded 2>/dev/null || echo 0)
               _pct=0; [ "$_total" -gt 0 ] && _pct=$((_done * 100 / _total))
-              echo "  ⏱ Heartbeat: ${_done}/${_total} (${_pct}%) encoded, ${_errors} errors, ${_tg} sent to TG — $(date +%H:%M:%S)"
+              _tg_info=""
+              if [ "$UPLOAD_TELEGRAM" = "yes" ]; then
+                _tg=$(cat /tmp/tg_uploaded 2>/dev/null || echo 0)
+                _tg_info=", ${_tg} sent to TG"
+              fi
+              echo "  ⏱ Heartbeat: ${_done}/${_total} (${_pct}%) encoded, ${_errors} errors${_tg_info} — $(date +%H:%M:%S)"
             done
           ) &
           HEARTBEAT_PID=$!
