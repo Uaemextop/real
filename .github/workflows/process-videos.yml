@@ -402,6 +402,35 @@ jobs:
                         "$part_file" > /dev/null 2>&1 || true
                       start=$((start + max_seg))
                     done
+                    # Re-split any parts that still exceed 49 MB (VBR can cause oversize segments)
+                    while IFS= read -r oversize_file; do
+                      local osz
+                      osz=$(stat -c%s "$oversize_file" 2>/dev/null || echo 0)
+                      if [ "$osz" -gt "$TG_MAX_SIZE" ]; then
+                        echo "    📨 ♻ $(basename "$oversize_file") ($((osz/1024/1024))MB) over 49 MB, re-splitting…"
+                        local pdur
+                        pdur=$(ffprobe -v error -show_entries format=duration \
+                          -of csv=p=0 "$oversize_file" 2>/dev/null | awk '{printf "%d", $1}') || true
+                        pdur=${pdur:-0}
+                        if [ "$pdur" -gt 0 ]; then
+                          local pbps=$(( osz / pdur ))
+                          [ "$pbps" -lt 1 ] && pbps=1
+                          local pseg=$(( TG_MAX_SIZE * 8 / 10 / pbps ))   # 80% margin for re-split
+                          [ "$pseg" -lt 5 ] && pseg=5
+                          local base="${oversize_file%.mp4}"
+                          local sub_idx=0
+                          local pstart=0
+                          while [ "$pstart" -lt "$pdur" ]; do
+                            sub_idx=$((sub_idx + 1))
+                            ffmpeg -y -nostdin -ss "$pstart" -i "$oversize_file" \
+                              -t "$pseg" -c copy -movflags +faststart \
+                              "${base}_sub$(printf '%03d' "$sub_idx").mp4" > /dev/null 2>&1 || true
+                            pstart=$((pstart + pseg))
+                          done
+                          rm -f "$oversize_file"
+                        fi
+                      fi
+                    done < <(find "$tg_split_dir" -name 'part_*.mp4' | sort)
                     # Upload all parts in order (process substitution avoids subshell counter bug)
                     local actual_parts
                     actual_parts=$(find "$tg_split_dir" -name 'part_*.mp4' 2>/dev/null | wc -l)
