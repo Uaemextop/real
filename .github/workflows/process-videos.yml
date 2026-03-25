@@ -336,10 +336,11 @@ jobs:
               }
             rm -f "$logfile"
 
-            # 5. Validate output is a playable MP4
+            # 5. Validate output is a playable MP4 (quick decode test)
             if [ -f "processed/${out_name}" ]; then
               if ! ffprobe -v error -select_streams v:0 -show_entries stream=codec_name \
-                   -of csv=p=0 "processed/${out_name}" > /dev/null 2>&1; then
+                   -of csv=p=0 "processed/${out_name}" > /dev/null 2>&1 || \
+                 ! ffmpeg -v error -i "processed/${out_name}" -t 1 -f null /dev/null 2>&1; then
                 echo "::warning::Output validation failed for ${out_name} — removing"
                 rm -f "processed/${out_name}"
                 (
@@ -547,7 +548,7 @@ jobs:
               echo "  ⚡ Re-encoding $(basename "$video") ($((file_size / 1024 / 1024))MB) — too large for GitHub release"
               shrunk="/tmp/shrunk_$(basename "$video")"
               ffmpeg -y -nostdin -i "$video" \
-                -c:v libx264 -preset fast -crf 23 -threads 4 \
+                -c:v libx264 -preset fast -crf 23 -threads "$(nproc)" \
                 -profile:v high -level:v 4.1 -tune film \
                 -c:a aac -b:a 192k -ar 48000 \
                 -pix_fmt yuv420p -movflags +faststart \
