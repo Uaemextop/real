@@ -76,13 +76,14 @@ jobs:
 
           echo "::group::GitHub CLI"
           if ! command -v gh &>/dev/null; then
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-              | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-              | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-            sudo apt-get update -qq > /dev/null
-            sudo apt-get install -y -qq gh > /dev/null
-            echo "Installed GitHub CLI"
+            GH_VER=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest \
+              | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+            [ -z "$GH_VER" ] && GH_VER="2.65.0"
+            curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.deb" \
+              -o /tmp/gh_cli.deb
+            sudo dpkg -i /tmp/gh_cli.deb > /dev/null
+            rm -f /tmp/gh_cli.deb
+            echo "Installed GitHub CLI $(gh --version | head -1)"
           else
             echo "GitHub CLI already available: $(gh --version | head -1)"
           fi
