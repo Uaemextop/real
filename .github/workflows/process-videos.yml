@@ -52,9 +52,8 @@ jobs:
           | 📦 Dependencies | ⏳ Running | Installing… |
           | 📁 Directories | ⏳ Pending | — |
           | ⬇️ Downloads | ⏳ Pending | — |
-          | 🎞️ Processing | ⏳ Pending | — |
+          | 🎞️ Processing + 📨 Telegram | ⏳ Pending | — |
           | ☁️ Cloud Upload | ⏳ Pending | — |
-          | 📨 Telegram | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -101,9 +100,8 @@ jobs:
           | 📦 Dependencies | ✅ Done | ${ELAPSED}s — ffmpeg, aria2, zip, rclone, gh |
           | 📁 Directories | ⏳ Running | — |
           | ⬇️ Downloads | ⏳ Pending | — |
-          | 🎞️ Processing | ⏳ Pending | — |
+          | 🎞️ Processing + 📨 Telegram | ⏳ Pending | — |
           | ☁️ Cloud Upload | ⏳ Pending | — |
-          | 📨 Telegram | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -133,9 +131,8 @@ jobs:
           | 📦 Dependencies | ✅ Done | — |
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ⏳ Running | Preparing… |
-          | 🎞️ Processing | ⏳ Pending | — |
+          | 🎞️ Processing + 📨 Telegram | ⏳ Pending | — |
           | ☁️ Cloud Upload | ⏳ Pending | — |
-          | 📨 Telegram | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -222,9 +219,8 @@ jobs:
           | 📦 Dependencies | ✅ Done | — |
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | ${ELAPSED}s — ${valid} files (${total_size}), ${invalid} invalid |
-          | 🎞️ Processing | ⏳ Running | 0/${valid} videos… |
+          | 🎞️ Processing + 📨 Telegram | ⏳ Running | 0/${valid} videos… |
           | ☁️ Cloud Upload | ⏳ Pending | — |
-          | 📨 Telegram | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -232,6 +228,10 @@ jobs:
           echo "::endgroup::"
 
       - name: Process videos — crop, denoise, sharpen and re-encode (64 vCPUs)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          UPLOAD_TELEGRAM: ${{ inputs.upload_telegram }}
         run: |
           PHASE_START=$SECONDS
 
@@ -251,6 +251,9 @@ jobs:
           # Shared counters for progress tracking (atomic via lock file)
           echo "0" > /tmp/vid_done
           echo "0" > /tmp/vid_errors
+          echo "0" > /tmp/tg_uploaded
+          echo "0" > /tmp/tg_skipped
+          echo "0" > /tmp/tg_errors
           TOTAL_VIDEOS=$(find downloads -maxdepth 1 -type f | wc -l)
           echo "$TOTAL_VIDEOS" > /tmp/vid_total
 
@@ -353,6 +356,50 @@ jobs:
               }
             rm -f "$logfile"
 
+            # 5. Upload to Telegram immediately after encoding (if enabled)
+            if [ "$UPLOAD_TELEGRAM" = "yes" ] && [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+              local tg_max=$((50 * 1024 * 1024))
+              local out_file="processed/${output_name}"
+              if [ -f "$out_file" ]; then
+                local out_size
+                out_size=$(stat -c%s "$out_file" 2>/dev/null || echo 0)
+                if [ "$out_size" -gt "$tg_max" ]; then
+                  echo "    📨 $output_name — $(( out_size / 1024 / 1024 ))MB exceeds 50 MB, Telegram skipped"
+                  (
+                    flock 9
+                    echo $(($(cat /tmp/tg_skipped) + 1)) > /tmp/tg_skipped
+                  ) 9>/tmp/tg_lock
+                else
+                  echo "    📨 $output_name — uploading to Telegram…"
+                  local tg_response
+                  tg_response=$(curl -s -w "\n%{http_code}" -X POST \
+                    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+                    -F "chat_id=${TELEGRAM_CHAT_ID}" \
+                    -F "video=@${out_file}" \
+                    -F "caption=${output_name}" \
+                    -F "supports_streaming=true" \
+                    --max-time 600 2>&1) || true
+                  local tg_http
+                  tg_http=$(echo "$tg_response" | tail -1)
+                  local tg_ok
+                  tg_ok=$(echo "$tg_response" | sed '$d' | grep -o '"ok":true' || true)
+                  if [ -n "$tg_ok" ]; then
+                    echo "    📨 ✅ Sent to Telegram"
+                    (
+                      flock 9
+                      echo $(($(cat /tmp/tg_uploaded) + 1)) > /tmp/tg_uploaded
+                    ) 9>/tmp/tg_lock
+                  else
+                    echo "::warning::Telegram upload failed for $output_name (HTTP $tg_http)"
+                    (
+                      flock 9
+                      echo $(($(cat /tmp/tg_errors) + 1)) > /tmp/tg_errors
+                    ) 9>/tmp/tg_lock
+                  fi
+                fi
+              fi
+            fi
+
             rm -f "$video"
 
             local vid_elapsed=$((SECONDS - vid_start))
@@ -365,7 +412,7 @@ jobs:
           }
 
           export -f process_video
-          export THREADS_PER_JOB ENHANCE_FILTERS
+          export THREADS_PER_JOB ENHANCE_FILTERS UPLOAD_TELEGRAM TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
 
           echo "::group::Encoding $TOTAL_VIDEOS videos (${PARALLEL_JOBS} parallel workers)"
 
@@ -375,8 +422,9 @@ jobs:
               _done=$(cat /tmp/vid_done 2>/dev/null || echo 0)
               _total=$(cat /tmp/vid_total 2>/dev/null || echo 0)
               _errors=$(cat /tmp/vid_errors 2>/dev/null || echo 0)
+              _tg=$(cat /tmp/tg_uploaded 2>/dev/null || echo 0)
               _pct=0; [ "$_total" -gt 0 ] && _pct=$((_done * 100 / _total))
-              echo "  ⏱ Heartbeat: ${_done}/${_total} (${_pct}%) encoded, ${_errors} errors — $(date +%H:%M:%S)"
+              echo "  ⏱ Heartbeat: ${_done}/${_total} (${_pct}%) encoded, ${_errors} errors, ${_tg} sent to TG — $(date +%H:%M:%S)"
             done
           ) &
           HEARTBEAT_PID=$!
@@ -390,21 +438,35 @@ jobs:
 
           processed_count=$(ls processed/ 2>/dev/null | wc -l)
           error_count=$(cat /tmp/vid_errors 2>/dev/null || echo 0)
+          tg_uploaded=$(cat /tmp/tg_uploaded 2>/dev/null || echo 0)
+          tg_skipped=$(cat /tmp/tg_skipped 2>/dev/null || echo 0)
+          tg_errors=$(cat /tmp/tg_errors 2>/dev/null || echo 0)
           ELAPSED=$((SECONDS - PHASE_START))
 
           echo "::group::Processing summary"
           echo "Processed : $processed_count videos"
           echo "Errors    : $error_count"
           echo "Time      : ${ELAPSED}s"
+          if [ "$UPLOAD_TELEGRAM" = "yes" ]; then
+            echo "Telegram  : ${tg_uploaded} sent, ${tg_skipped} skipped (>50 MB), ${tg_errors} errors"
+          fi
           echo "::endgroup::"
+
+          # Write Telegram status for dashboard
+          if [ "$UPLOAD_TELEGRAM" = "yes" ]; then
+            echo "✅ Done | ${tg_uploaded} sent, ${tg_skipped} skipped (>50 MB), ${tg_errors} errors (inline)" > /tmp/telegram_status.txt
+          else
+            echo "⏭️ Skipped | telegram=no" > /tmp/telegram_status.txt
+          fi
 
           processed_size=$(du -sh processed/ 2>/dev/null | awk '{print $1}')
           processed_size=${processed_size:-0}
+          TELEGRAM_STATUS=$(cat /tmp/telegram_status.txt 2>/dev/null || echo "⏭️ Skipped | —")
           echo "::group::Update dashboard"
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩🟩🟩🟩⬜⬜⬜⬜ **4 / 8** — Encoding complete
+          🟩🟩🟩🟩🟩⬜⬜⬜ **5 / 8** — Encoding + Telegram complete
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -412,8 +474,8 @@ jobs:
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | — |
           | 🎞️ Processing | ✅ Done | ${ELAPSED}s — ${processed_count} videos (${processed_size}), ${error_count} errors |
+          | 📨 Telegram | ${TELEGRAM_STATUS} |
           | ☁️ Cloud Upload | ⏳ Running | Uploading… |
-          | 📨 Telegram | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Pending | — |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -487,10 +549,11 @@ jobs:
           CLOUD_DETAIL="${ELAPSED}s — ${mp4_count} MP4(s) → ${MIRROR}:${FOLDER}/"
           [ "$UPLOAD_ERRORS" -gt 0 ] && CLOUD_DETAIL="${CLOUD_DETAIL} (${UPLOAD_ERRORS} error(s))"
           echo "✅ Done | ${CLOUD_DETAIL}" > /tmp/cloud_status.txt
+          TELEGRAM_STATUS=$(cat /tmp/telegram_status.txt 2>/dev/null || echo "⏭️ Skipped | —")
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩🟩🟩🟩🟩⬜⬜⬜ **5 / 8** — Cloud upload complete
+          🟩🟩🟩🟩🟩🟩⬜⬜ **6 / 8** — Cloud upload complete
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -498,8 +561,8 @@ jobs:
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | — |
           | 🎞️ Processing | ✅ Done | — |
+          | 📨 Telegram | ${TELEGRAM_STATUS} |
           | ☁️ Cloud Upload | ✅ Done | ${CLOUD_DETAIL} |
-          | 📨 Telegram | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Running | Creating zip files… |
           | 🚀 Release | ⏳ Pending | — |
           EOF
@@ -510,11 +573,12 @@ jobs:
         if: ${{ inputs.upload_mirror == 'none' || inputs.upload_mirror == '' }}
         run: |
           echo "⏭️ Skipped | mirror=none" > /tmp/cloud_status.txt
+          TELEGRAM_STATUS=$(cat /tmp/telegram_status.txt 2>/dev/null || echo "⏭️ Skipped | —")
           echo "::group::Update dashboard"
           cat > /tmp/dashboard.md <<EOF
           ## 🎬 Video Processing Dashboard
 
-          🟩🟩🟩🟩🟩⬜⬜⬜ **5 / 8** — Cloud upload skipped
+          🟩🟩🟩🟩🟩🟩⬜⬜ **6 / 8** — Cloud upload skipped
 
           | Phase | Status | Details |
           |-------|--------|---------|
@@ -522,91 +586,13 @@ jobs:
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | — |
           | 🎞️ Processing | ✅ Done | — |
+          | 📨 Telegram | ${TELEGRAM_STATUS} |
           | ☁️ Cloud Upload | ⏭️ Skipped | mirror=none |
-          | 📨 Telegram | ⏳ Pending | — |
           | 📦 Packaging | ⏳ Running | Creating zip files… |
           | 🚀 Release | ⏳ Pending | — |
           EOF
           cp /tmp/dashboard.md "$GITHUB_STEP_SUMMARY"
           echo "::endgroup::"
-
-      - name: Upload processed videos to Telegram
-        if: ${{ inputs.upload_telegram == 'yes' }}
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          PHASE_START=$SECONDS
-          TG_MAX_SIZE=$((50 * 1024 * 1024))  # Telegram Bot API 50 MB limit
-
-          echo "::group::Validate Telegram secrets"
-          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
-            echo "::error::TELEGRAM_BOT_TOKEN secret is not set. See docs/TELEGRAM-SETUP.md"
-            exit 1
-          fi
-          if [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "::error::TELEGRAM_CHAT_ID secret is not set. See docs/TELEGRAM-SETUP.md"
-            exit 1
-          fi
-          echo "Telegram secrets validated"
-          echo "::endgroup::"
-
-          uploaded=0
-          skipped=0
-          errors=0
-          total_mp4=$(find processed -maxdepth 1 -name '*.mp4' -type f | wc -l)
-
-          echo "::group::Uploading ${total_mp4} video(s) to Telegram channel"
-          for video in processed/*.mp4; do
-            [ -f "$video" ] || continue
-            vname=$(basename "$video")
-            vsize=$(stat -c%s "$video")
-            vsize_mb=$(( vsize / 1024 / 1024 ))
-
-            if [ "$vsize" -gt "$TG_MAX_SIZE" ]; then
-              echo "  ⏭️ $vname — ${vsize_mb}MB exceeds 50 MB limit, skipped"
-              skipped=$((skipped + 1))
-              continue
-            fi
-
-            echo "  📤 $vname (${vsize_mb}MB)…"
-            response=$(curl -s -w "\n%{http_code}" -X POST \
-              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
-              -F "chat_id=${TELEGRAM_CHAT_ID}" \
-              -F "video=@${video}" \
-              -F "caption=${vname}" \
-              -F "supports_streaming=true" \
-              --max-time 600 2>&1) || true
-
-            http_code=$(echo "$response" | tail -1)
-            body=$(echo "$response" | sed '$d')
-            ok=$(echo "$body" | grep -o '"ok":true' || true)
-
-            if [ -n "$ok" ]; then
-              echo "    ✅ Sent successfully"
-              uploaded=$((uploaded + 1))
-            else
-              echo "::warning::Failed to upload $vname to Telegram (HTTP $http_code)"
-              echo "    Response: $(echo "$body" | head -3)"
-              errors=$((errors + 1))
-            fi
-          done
-          echo "::endgroup::"
-
-          ELAPSED=$((SECONDS - PHASE_START))
-          echo "::group::Telegram upload summary"
-          echo "Uploaded : $uploaded"
-          echo "Skipped  : $skipped (>50 MB)"
-          echo "Errors   : $errors"
-          echo "Time     : ${ELAPSED}s"
-          echo "::endgroup::"
-
-          echo "✅ Done | ${ELAPSED}s — ${uploaded} sent, ${skipped} skipped (>50 MB), ${errors} errors" > /tmp/telegram_status.txt
-
-      - name: Skip Telegram upload
-        if: ${{ inputs.upload_telegram != 'yes' }}
-        run: |
-          echo "⏭️ Skipped | telegram=no" > /tmp/telegram_status.txt
 
       - name: Create zip files with size limit
         run: |
@@ -721,8 +707,8 @@ jobs:
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | — |
           | 🎞️ Processing | ✅ Done | — |
-          | ☁️ Cloud Upload | ${CLOUD_STATUS} |
           | 📨 Telegram | ${TELEGRAM_STATUS} |
+          | ☁️ Cloud Upload | ${CLOUD_STATUS} |
           | 📦 Packaging | ✅ Done | ${ELAPSED}s — ${zip_count} zips (${zip_size}) |
           | 🚀 Release | ⏳ Running | Uploading… |
           EOF
@@ -778,8 +764,8 @@ jobs:
           | 📁 Directories | ✅ Done | full tmpfs (downloads + processed 100G) |
           | ⬇️ Downloads | ✅ Done | — |
           | 🎞️ Processing | ✅ Done | — |
-          | ☁️ Cloud Upload | ${CLOUD_STATUS} |
           | 📨 Telegram | ${TELEGRAM_STATUS} |
+          | ☁️ Cloud Upload | ${CLOUD_STATUS} |
           | 📦 Packaging | ✅ Done | ${zip_count} zip files |
           | 🚀 Release | ✅ Done | ${ELAPSED}s — [\`${TAG}\`](../../releases/tag/${TAG}) |
 

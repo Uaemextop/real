@@ -10,8 +10,10 @@ When you trigger the workflow manually (`workflow_dispatch`) you can choose:
 |-------|-------------|
 | `upload_telegram` | `yes` or `no` (default: `no`) |
 
-Processed `.mp4` files are uploaded to the specified Telegram channel **after** encoding
-and cloud upload (if enabled), and **before** zip packaging.
+Processed `.mp4` files are uploaded to the specified Telegram channel **immediately
+after each video finishes encoding** — no waiting for the entire batch to complete.
+This means you can start watching videos in your Telegram channel while the rest
+are still being processed.
 
 > **Note:** The Telegram Bot API has a **50 MB per file** limit. Videos larger than
 > 50 MB are automatically skipped with a warning in the workflow logs.
