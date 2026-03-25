@@ -78,7 +78,10 @@ jobs:
           if ! command -v gh &>/dev/null; then
             GH_VER=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest \
               | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
-            [ -z "$GH_VER" ] && GH_VER="2.65.0"
+            if [ -z "$GH_VER" ]; then
+              echo "::warning::Failed to detect latest gh version, using fallback 2.65.0"
+              GH_VER="2.65.0"
+            fi
             curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.deb" \
               -o /tmp/gh_cli.deb
             sudo dpkg -i /tmp/gh_cli.deb > /dev/null
