@@ -380,21 +380,23 @@ jobs:
                   mkdir -p "$tg_split_dir"
                   local duration
                   duration=$(timeout 30 ffprobe -v error -show_entries format=duration \
-                    -of csv=p=0 "$out_file" 2>/dev/null | cut -d. -f1) || true
+                    -of csv=p=0 "$out_file" 2>/dev/null | awk '{printf "%d", $1}') || true
                   duration=${duration:-0}
                   if [ "$duration" -gt 0 ]; then
                     # Calculate segment duration to keep each part under 50 MB (90% safety)
                     local bps=$(( out_size / duration ))
+                    [ "$bps" -lt 1 ] && bps=1
                     local max_seg=$(( TG_MAX_SIZE * 9 / 10 / bps ))
                     [ "$max_seg" -lt 10 ] && max_seg=10
-                    timeout 600 ffmpeg -y -nostdin -threads 2 -i "$out_file" \
+                    [ "$max_seg" -gt 600 ] && max_seg=600
+                    timeout 900 ffmpeg -y -nostdin -threads 2 -i "$out_file" \
                       -c copy -f segment -segment_time "$max_seg" \
                       -reset_timestamps 1 \
                       "${tg_split_dir}/part_%03d.mp4" > /dev/null 2>&1 || true
                     local part_num=0
                     local total_parts
                     total_parts=$(find "$tg_split_dir" -name 'part_*.mp4' | wc -l)
-                    for part_file in $(find "$tg_split_dir" -name 'part_*.mp4' | sort); do
+                    find "$tg_split_dir" -name 'part_*.mp4' | sort | while IFS= read -r part_file; do
                       part_num=$((part_num + 1))
                       local part_sz
                       part_sz=$(stat -c%s "$part_file" 2>/dev/null || echo 0)
