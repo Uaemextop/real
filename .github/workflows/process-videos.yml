@@ -733,11 +733,20 @@ jobs:
             if [ "$file_size" -ge "$MAX_SIZE" ]; then
               if [ "$current_size" -gt 0 ]; then
                 zip_index=$((zip_index + 1))
+                current_size=0
+                current_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
               fi
-              single_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
-              echo "  Large file $(basename "$video") → $single_zip"
-              zip -j -0 "$single_zip" "$video" > /dev/null
-              zip_index=$((zip_index + 1))
+              base_name=$(basename "$video")
+              echo "  Large file ${base_name} ($((file_size / 1024 / 1024))MB) — splitting into 1900m chunks"
+              split -b 1900m "$video" "/tmp/${base_name}_chunk_"
+              rm -f "$video"
+              for chunk in /tmp/${base_name}_chunk_*; do
+                chunk_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
+                echo "    $(basename "$chunk") → $chunk_zip"
+                zip -j -0 "$chunk_zip" "$chunk" > /dev/null
+                rm -f "$chunk"
+                zip_index=$((zip_index + 1))
+              done
               current_size=0
               current_zip="zips/videos_part_$(printf '%03d' $zip_index).zip"
               rm -f "$video"
