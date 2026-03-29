@@ -596,7 +596,18 @@ jobs:
               echo "::error::RCLONE_DROPBOX_TOKEN secret is not set. See docs/CLOUD-STORAGE-SETUP.md"
               exit 1
             fi
-            printf '[dropbox]\ntype = dropbox\ntoken = %s\n\n' "$RCLONE_DROPBOX_TOKEN" >> "$RCLONE_CONFIG_FILE"
+            DROPBOX_TOKEN="$RCLONE_DROPBOX_TOKEN"
+            if [ "${DROPBOX_TOKEN:0:1}" != "{" ]; then
+              DECODED=$(printf '%s' "$DROPBOX_TOKEN" | base64 --decode 2>/dev/null || true)
+              if [ "${DECODED:0:1}" = "{" ]; then
+                DROPBOX_TOKEN="$DECODED"
+                echo "Note: RCLONE_DROPBOX_TOKEN was base64-decoded automatically"
+              else
+                echo "::error::RCLONE_DROPBOX_TOKEN must be a JSON object (starts with '{}'). See docs/CLOUD-STORAGE-SETUP.md"
+                exit 1
+              fi
+            fi
+            printf '[dropbox]\ntype = dropbox\ntoken = %s\n\n' "$DROPBOX_TOKEN" >> "$RCLONE_CONFIG_FILE"
             echo "Dropbox remote configured"
           fi
           if [ "$MIRROR" = "gdrive" ] || [ "$MIRROR" = "both" ]; then
@@ -604,7 +615,18 @@ jobs:
               echo "::error::RCLONE_GDRIVE_TOKEN secret is not set. See docs/CLOUD-STORAGE-SETUP.md"
               exit 1
             fi
-            printf '[gdrive]\ntype = drive\nscope = drive\ntoken = %s\n\n' "$RCLONE_GDRIVE_TOKEN" >> "$RCLONE_CONFIG_FILE"
+            GDRIVE_TOKEN="$RCLONE_GDRIVE_TOKEN"
+            if [ "${GDRIVE_TOKEN:0:1}" != "{" ]; then
+              DECODED=$(printf '%s' "$GDRIVE_TOKEN" | base64 --decode 2>/dev/null || true)
+              if [ "${DECODED:0:1}" = "{" ]; then
+                GDRIVE_TOKEN="$DECODED"
+                echo "Note: RCLONE_GDRIVE_TOKEN was base64-decoded automatically"
+              else
+                echo "::error::RCLONE_GDRIVE_TOKEN must be a JSON object (starts with '{}'). See docs/CLOUD-STORAGE-SETUP.md"
+                exit 1
+              fi
+            fi
+            printf '[gdrive]\ntype = drive\nscope = drive\ntoken = %s\n\n' "$GDRIVE_TOKEN" >> "$RCLONE_CONFIG_FILE"
             echo "Google Drive remote configured"
           fi
           echo "::endgroup::"
